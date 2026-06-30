@@ -1,20 +1,50 @@
-# Repository Guidelines
+# Instrucciones del repositorio
 
-## Project Structure & Module Organization
+Habdorn PDF es una aplicación de escritorio para Windows escrita en Python/PySide6. La versión actual funciona y es la base canónica del proyecto.
 
-This repository contains a compact Windows-oriented Python desktop app for assembling and editing PDF files.
+## Ramas y estabilidad
 
-- `main.py`: main PySide6 application, including UI, page models, preview scene, image overlays, and PDF export logic.
-- `requirements.txt`: runtime and packaging dependencies.
-- `README.txt`: end-user instructions in Spanish.
-- `EJECUTAR_EN_WINDOWS.bat`: launches the app on Windows.
-- `CREAR_EXE_WINDOWS.bat`: builds a distributable executable with PyInstaller.
+- La rama `main` representa siempre la versión estable.
+- Trabaja solamente sobre la rama indicada por el usuario.
+- No hagas commits ni push sin autorización explícita.
+- Las mejoras deben ser incrementales, pequeñas y fáciles de revisar.
 
-There is currently no dedicated `tests/` directory or separate asset folder. Keep new modules small and only split code out of `main.py` when it clearly improves maintainability.
+## Reglas de cambio
 
-## Build, Test, and Development Commands
+- No reescribas el programa desde cero.
+- No reorganices la arquitectura ni dividas `main.py` salvo autorización expresa.
+- No elimines ni sustituyas funciones existentes sin autorización.
+- No cambies nombres de clases, métodos, variables, archivos ni scripts si no es indispensable para la tarea aprobada.
+- Antes de cambios grandes, informa qué archivos serán afectados y espera confirmación si el alcance no fue pedido con claridad.
+- Después de cada cambio, ejecuta verificaciones apropiadas y seguras.
+- Mantén los archivos de texto en UTF-8.
+- Mantén el texto visible de la aplicación en español.
 
-Create and activate a virtual environment before installing dependencies:
+## Funciones obligatorias a conservar
+
+Cualquier cambio debe conservar estas capacidades:
+
+- abrir y unir varios PDF;
+- mostrar y reordenar miniaturas;
+- eliminar páginas;
+- agregar páginas en blanco;
+- agregar imágenes como páginas;
+- insertar, mover y redimensionar imágenes;
+- exportar conservando la calidad original.
+
+## Estructura del proyecto
+
+- `main.py`: aplicación principal PySide6, modelos de página, vista previa, miniaturas, overlays de imagen y exportación PDF.
+- `requirements.txt`: dependencias de ejecución y empaquetado.
+- `README.txt`: instrucciones para usuarios en español.
+- `EJECUTAR_EN_WINDOWS.bat`: ejecuta la aplicación en Windows.
+- `CREAR_EXE_WINDOWS.bat`: crea el ejecutable distribuible con PyInstaller.
+
+No hay actualmente un directorio `tests/` ni una carpeta separada de assets. Si se agregan módulos, deben ser pequeños y estar justificados por mantenibilidad real.
+
+## Comandos de desarrollo
+
+Crear y activar entorno virtual antes de instalar dependencias:
 
 ```powershell
 python -m venv .venv
@@ -22,38 +52,49 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Run the app locally:
+Ejecutar la aplicación:
 
 ```powershell
 python main.py
 ```
 
-Build the Windows executable:
+Crear el ejecutable:
 
 ```powershell
 .\CREAR_EXE_WINDOWS.bat
 ```
 
-The generated executable is expected under `dist\HabdornPDF\HabdornPDF.exe`.
+El ejecutable generado debe quedar en `dist\HabdornPDF\HabdornPDF.exe`.
 
-## Coding Style & Naming Conventions
+## Estilo de código
 
-Use Python 3.11+ syntax and keep code compatible with the dependency ranges in `requirements.txt`. Follow PEP 8 with 4-space indentation. Use `snake_case` for functions, variables, and methods; `PascalCase` for classes such as `PageModel` and `MainWindow`; and uppercase constants such as `APP_NAME`.
+Usa Python 3.11+ y conserva compatibilidad con los rangos de `requirements.txt`. Sigue PEP 8 con indentación de 4 espacios. Usa `snake_case` para funciones, variables y métodos; `PascalCase` para clases como `PageModel` y `MainWindow`; y constantes en mayúsculas como `APP_NAME`.
 
-Prefer typed dataclasses for app state models, as seen with `PageModel` and `OverlayModel`. Keep UI text in Spanish unless a feature is explicitly intended for developers.
+Prefiere dataclasses tipadas para modelos de estado, como `PageModel` y `OverlayModel`.
 
-## Testing Guidelines
+## Verificaciones
 
-No automated test framework is currently configured. For now, validate changes manually by running `python main.py` and checking the affected PDF workflow: opening PDFs, adding images or blank pages, reordering pages, inserting overlays, resizing overlays, deleting items, and exporting a new PDF.
+No hay framework automático configurado. Para cambios de código, ejecuta como mínimo comprobaciones seguras:
 
-If tests are added, place them under `tests/`, use `pytest`, and name files `test_*.py`.
+```powershell
+python -m py_compile main.py
+python -c "import main"
+```
 
-## Commit & Pull Request Guidelines
+Si las dependencias ya están instaladas y el cambio lo amerita, también puedes iniciar la aplicación con:
 
-This folder is not currently a Git repository, so no local commit history conventions are available. Use concise imperative commit messages if version control is added, for example `Fix overlay resize bounds` or `Add blank page export test`.
+```powershell
+python main.py
+```
 
-Pull requests should include a short description, manual test steps, screenshots for visible UI changes, and notes about any packaging impact.
+No instales dependencias nuevas sin autorización. Para validación manual, revisa el flujo afectado: abrir PDF, agregar imágenes o páginas en blanco, reordenar páginas, insertar overlays, mover y redimensionar overlays, eliminar elementos y exportar un PDF nuevo.
 
-## Security & Configuration Tips
+Si se agregan tests, colócalos en `tests/`, usa `pytest` y nombra los archivos `test_*.py`.
 
-The app works locally and should not upload user documents. Treat opened PDFs and images as private user data. Avoid adding network access, telemetry, or persistent document copies unless the behavior is clearly documented and user-controlled.
+## Scripts de Windows
+
+No modifiques `EJECUTAR_EN_WINDOWS.bat` ni `CREAR_EXE_WINDOWS.bat`, salvo que exista un error evidente que impida ejecutar la aplicación. En ese caso, informa primero el problema y espera autorización.
+
+## Seguridad y privacidad
+
+La aplicación trabaja localmente y no debe subir documentos del usuario. Trata los PDF e imágenes abiertos como datos privados. Evita agregar red, telemetría o copias persistentes de documentos salvo que el comportamiento esté documentado y controlado por el usuario.
