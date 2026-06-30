@@ -3,14 +3,16 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+import math
+from io import BytesIO
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -45,6 +47,7 @@ class OverlayModel:
     y: float
     w: float
     h: float
+    rotation: float = 0.0
 
 
 @dataclass
@@ -55,20 +58,27 @@ class PageModel:
     page_index: Optional[int] = None
     width_pt: float = A4_PORTRAIT[0]
     height_pt: float = A4_PORTRAIT[1]
+    rotation: int = 0
     label: str = "Página"
     overlays: List[OverlayModel] = field(default_factory=list)
 
 
 class OverlayGraphicsItem(QGraphicsItem):
     HANDLE = 16.0
+    ROTATE_OFFSET = 32.0
 
-    def __init__(self, model_id: str, pixmap: QPixmap, rect: QRectF, page_rect: QRectF):
+    def __init__(self, model_id: str, pixmap: QPixmap, rect: QRectF, page_rect: QRectF, rotation: float = 0.0):
         super().__init__()
         self.model_id = model_id
         self.pixmap = pixmap
-        self._rect = QRectF(rect)
+        self._rect = QRectF(0, 0, rect.width(), rect.height())
         self.page_rect = QRectF(page_rect)
         self._resizing = False
+        self._resize_handle: Optional[str] = None
+        self._resize_anchor_scene = QPointF()
+        self._rotating = False
+        self._rotate_start_angle = 0.0
+        self._rotate_start_rotation = rotation
         self._aspect = pixmap.width() / max(1, pixmap.height())
         self.setFlags(
             QGraphicsItem.ItemIsMovable
@@ -77,21 +87,47 @@ class OverlayGraphicsItem(QGraphicsItem):
         )
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setZValue(10)
+        self.setTransformOriginPoint(self._rect.center())
+        self.setRotation(rotation)
 
     def rect(self) -> QRectF:
         return QRectF(self._rect)
 
+    def overlay_rotation(self) -> float:
+        return self.rotation() % 360
+
     def boundingRect(self) -> QRectF:
-        pad = 3.0
+        pad = self.HANDLE + self.ROTATE_OFFSET + 6.0
         return self._rect.adjusted(-pad, -pad, pad, pad)
 
-    def handle_rect(self) -> QRectF:
+    def handle_rect(self, handle: str) -> QRectF:
+        half = self.HANDLE / 2.0
+        points = {
+            "tl": self._rect.topLeft(),
+            "tr": self._rect.topRight(),
+            "bl": self._rect.bottomLeft(),
+            "br": self._rect.bottomRight(),
+        }
+        p = points[handle]
         return QRectF(
-            self._rect.right() - self.HANDLE,
-            self._rect.bottom() - self.HANDLE,
+            p.x() - half,
+            p.y() - half,
             self.HANDLE,
             self.HANDLE,
         )
+
+    def rotate_handle_rect(self) -> QRectF:
+        half = self.HANDLE / 2.0
+        center = QPointF(self._rect.center().x(), self._rect.top() - self.ROTATE_OFFSET)
+        return QRectF(center.x() - half, center.y() - half, self.HANDLE, self.HANDLE)
+
+    def handle_at(self, pos: QPointF) -> Optional[str]:
+        if self.rotate_handle_rect().contains(pos):
+            return "rotate"
+        for handle in ("tl", "tr", "bl", "br"):
+            if self.handle_rect(handle).contains(pos):
+                return handle
+        return None
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
@@ -102,11 +138,30 @@ class OverlayGraphicsItem(QGraphicsItem):
             painter.drawRect(self._rect)
             painter.setPen(QPen(QColor("#ffffff"), 1))
             painter.setBrush(QBrush(QColor("#2f80ed")))
-            painter.drawRect(self.handle_rect())
+            for handle in ("tl", "tr", "bl", "br"):
+                painter.drawRect(self.handle_rect(handle))
+            painter.setPen(QPen(QColor("#8fc3ff"), 1))
+            painter.drawLine(self._rect.center(), self.rotate_handle_rect().center())
+            painter.setPen(QPen(QColor("#ffffff"), 1))
+            painter.setBrush(QBrush(QColor("#43c6ac")))
+            painter.drawEllipse(self.rotate_handle_rect())
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self.handle_rect().contains(event.pos()):
+        handle = self.handle_at(event.pos())
+        if event.button() == Qt.MouseButton.LeftButton and handle == "rotate":
+            self._rotating = True
+            center = self._rect.center()
+            vector = event.pos() - center
+            self._rotate_start_angle = math.degrees(math.atan2(vector.y(), vector.x()))
+            self._rotate_start_rotation = self.rotation()
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and handle:
             self._resizing = True
+            self._resize_handle = handle
+            anchor = self._opposite_corner(handle)
+            self._resize_anchor_scene = self.mapToScene(anchor)
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
             event.accept()
             return
@@ -114,30 +169,27 @@ class OverlayGraphicsItem(QGraphicsItem):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._rotating:
+            center = self._rect.center()
+            vector = event.pos() - center
+            angle = math.degrees(math.atan2(vector.y(), vector.x()))
+            rotation = self._rotate_start_rotation + angle - self._rotate_start_angle
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                rotation = round(rotation / 15.0) * 15.0
+            self.setRotation(rotation % 360)
+            self._clamp_to_page()
+            event.accept()
+            return
         if self._resizing:
-            local = event.pos()
-            new_w = max(40.0, local.x() - self._rect.left())
-            new_h = max(30.0, new_w / max(0.01, self._aspect))
-
-            max_w = self.page_rect.width() - self.pos().x() - self._rect.left()
-            max_h = self.page_rect.height() - self.pos().y() - self._rect.top()
-            if new_w > max_w:
-                new_w = max_w
-                new_h = new_w / max(0.01, self._aspect)
-            if new_h > max_h:
-                new_h = max_h
-                new_w = new_h * self._aspect
-
-            self.prepareGeometryChange()
-            self._rect.setWidth(max(20.0, new_w))
-            self._rect.setHeight(max(20.0, new_h))
-            self.update()
+            self._resize_from_handle(event.pos())
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         self._resizing = False
+        self._resize_handle = None
+        self._rotating = False
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().mouseReleaseEvent(event)
 
@@ -150,8 +202,75 @@ class OverlayGraphicsItem(QGraphicsItem):
             max_y = self.page_rect.height() - self._rect.bottom()
             p.setX(min(max(p.x(), min_x), max_x))
             p.setY(min(max(p.y(), min_y), max_y))
+            if self.rotation() % 360:
+                old_pos = self.pos()
+                delta = p - old_pos
+                bounds = self.sceneBoundingRect().translated(delta)
+                if bounds.left() < self.page_rect.left():
+                    p.setX(p.x() + self.page_rect.left() - bounds.left())
+                if bounds.top() < self.page_rect.top():
+                    p.setY(p.y() + self.page_rect.top() - bounds.top())
+                if bounds.right() > self.page_rect.right():
+                    p.setX(p.x() - (bounds.right() - self.page_rect.right()))
+                if bounds.bottom() > self.page_rect.bottom():
+                    p.setY(p.y() - (bounds.bottom() - self.page_rect.bottom()))
             return p
         return super().itemChange(change, value)
+
+    def _opposite_corner(self, handle: str) -> QPointF:
+        return {
+            "tl": self._rect.bottomRight(),
+            "tr": self._rect.bottomLeft(),
+            "bl": self._rect.topRight(),
+            "br": self._rect.topLeft(),
+        }[handle]
+
+    def _resize_from_handle(self, local: QPointF) -> None:
+        if not self._resize_handle:
+            return
+        anchor = self._opposite_corner(self._resize_handle)
+        dx = abs(local.x() - anchor.x())
+        dy = abs(local.y() - anchor.y())
+        min_w = 30.0
+        min_h = min_w / max(0.01, self._aspect)
+        new_w = max(min_w, dx)
+        new_h = max(min_h, dy)
+        if new_w / max(0.01, new_h) > self._aspect:
+            new_w = new_h * self._aspect
+        else:
+            new_h = new_w / max(0.01, self._aspect)
+
+        if self._resize_handle == "tl":
+            new_rect = QRectF(anchor.x() - new_w, anchor.y() - new_h, new_w, new_h)
+        elif self._resize_handle == "tr":
+            new_rect = QRectF(anchor.x(), anchor.y() - new_h, new_w, new_h)
+        elif self._resize_handle == "bl":
+            new_rect = QRectF(anchor.x() - new_w, anchor.y(), new_w, new_h)
+        else:
+            new_rect = QRectF(anchor.x(), anchor.y(), new_w, new_h)
+
+        self.prepareGeometryChange()
+        self._rect = new_rect
+        self.setTransformOriginPoint(self._rect.center())
+        moved_anchor = self.mapToScene(self._opposite_corner(self._resize_handle))
+        self.moveBy(self._resize_anchor_scene.x() - moved_anchor.x(), self._resize_anchor_scene.y() - moved_anchor.y())
+        self._clamp_to_page()
+        self.update()
+
+    def _clamp_to_page(self) -> None:
+        bounds = self.sceneBoundingRect()
+        dx = 0.0
+        dy = 0.0
+        if bounds.left() < self.page_rect.left():
+            dx = self.page_rect.left() - bounds.left()
+        elif bounds.right() > self.page_rect.right():
+            dx = self.page_rect.right() - bounds.right()
+        if bounds.top() < self.page_rect.top():
+            dy = self.page_rect.top() - bounds.top()
+        elif bounds.bottom() > self.page_rect.bottom():
+            dy = self.page_rect.bottom() - bounds.bottom()
+        if dx or dy:
+            self.moveBy(dx, dy)
 
 
 class PreviewView(QGraphicsView):
@@ -202,8 +321,8 @@ class MainWindow(QMainWindow):
 
         self.page_list = QListWidget()
         self.page_list.setViewMode(QListWidget.ViewMode.IconMode)
-        self.page_list.setIconSize(QSize(150, 205))
-        self.page_list.setGridSize(QSize(188, 248))
+        self.page_list.setIconSize(QSize(176, 205))
+        self.page_list.setGridSize(QSize())
         self.page_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.page_list.setMovement(QListWidget.Movement.Snap)
         self.page_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
@@ -253,6 +372,8 @@ class MainWindow(QMainWindow):
             ("+ Imagen como página", self.add_images_as_pages),
             ("+ Página en blanco", self.add_blank_page),
             ("Insertar imagen", self.add_overlay_image),
+            ("Rotar izquierda", lambda: self.rotate_selected_pages(-90)),
+            ("Rotar derecha", lambda: self.rotate_selected_pages(90)),
             ("Eliminar imagen", self.delete_selected_overlays),
             ("Eliminar página", self.delete_selected_pages),
             ("Exportar PDF", self.export_pdf),
@@ -280,6 +401,17 @@ class MainWindow(QMainWindow):
         exit_action = QAction("Salir", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        page_menu = self.menuBar().addMenu("Página")
+        rotate_left = QAction("Rotar izquierda", self)
+        rotate_left.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        rotate_left.triggered.connect(lambda: self.rotate_selected_pages(-90))
+        page_menu.addAction(rotate_left)
+
+        rotate_right = QAction("Rotar derecha", self)
+        rotate_right.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        rotate_right.triggered.connect(lambda: self.rotate_selected_pages(90))
+        page_menu.addAction(rotate_right)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -319,7 +451,11 @@ class MainWindow(QMainWindow):
             item.setToolTip(model.label)
             self.page_list.insertItem(insert_at + offset, item)
             self._set_thumbnail(item, model)
+        self.page_list.clearSelection()
         self.page_list.setCurrentRow(insert_at)
+        current = self.page_list.item(insert_at)
+        if current:
+            current.setSelected(True)
         self.statusBar().showMessage(f"{len(models)} página(s) añadida(s)", 4000)
 
     def add_pdfs(self) -> None:
@@ -410,11 +546,12 @@ class MainWindow(QMainWindow):
         self.save_current_overlay_positions()
         page = self.pages[self.current_page_id]
         ratio = pixmap.width() / max(1, pixmap.height())
+        page_w, page_h = self._rotated_page_size(page.width_pt, page.height_pt, page.rotation)
         norm_w = 0.42
-        norm_h = norm_w * (page.width_pt / page.height_pt) / ratio
+        norm_h = norm_w * (page_w / page_h) / ratio
         if norm_h > 0.55:
             norm_h = 0.55
-            norm_w = norm_h * ratio * (page.height_pt / page.width_pt)
+            norm_w = norm_h * ratio * (page_h / page_w)
         overlay = OverlayModel(
             id=uuid.uuid4().hex,
             path=os.path.abspath(path),
@@ -464,6 +601,32 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
 
+    def rotate_selected_pages(self, delta: int) -> None:
+        selected = self.page_list.selectedItems()
+        if not selected:
+            return
+        self.save_current_overlay_positions()
+        selected_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        for page_id in selected_ids:
+            page = self.pages.get(page_id)
+            if not page:
+                continue
+            for overlay in page.overlays:
+                self._rotate_overlay(overlay, delta)
+            page.rotation = (page.rotation + delta) % 360
+
+        for i in range(self.page_list.count()):
+            item = self.page_list.item(i)
+            page_id = item.data(Qt.ItemDataRole.UserRole)
+            if page_id in selected_ids and page_id in self.pages:
+                self._set_thumbnail(item, self.pages[page_id])
+
+        if self.current_page_id in selected_ids:
+            self.load_page_into_preview(self.current_page_id)
+
+        direction = "izquierda" if delta < 0 else "derecha"
+        self.statusBar().showMessage(f"{len(selected_ids)} página(s) rotada(s) a la {direction}", 4000)
+
     def on_page_changed(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem]) -> None:
         if self._changing_selection:
             return
@@ -495,6 +658,7 @@ class MainWindow(QMainWindow):
             model.y = min(max((p.y() + r.top()) / ph, 0.0), 1.0)
             model.w = min(max(r.width() / pw, 0.001), 1.0)
             model.h = min(max(r.height() / ph, 0.001), 1.0)
+            model.rotation = item.overlay_rotation()
         self._refresh_current_thumbnail()
 
     def load_page_into_preview(self, page_id: str) -> None:
@@ -513,12 +677,18 @@ class MainWindow(QMainWindow):
         base_item.setZValue(0)
 
         page_rect = self.scene.sceneRect()
+        rotation = page.rotation % 360
         for overlay in page.overlays:
             pixmap = QPixmap(overlay.path)
             if pixmap.isNull():
                 continue
+            if rotation:
+                pixmap = pixmap.transformed(
+                    QTransform().rotate(rotation),
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             rect = QRectF(0, 0, overlay.w * page_rect.width(), overlay.h * page_rect.height())
-            item = OverlayGraphicsItem(overlay.id, pixmap, rect, page_rect)
+            item = OverlayGraphicsItem(overlay.id, pixmap, rect, page_rect, overlay.rotation)
             item.setPos(overlay.x * page_rect.width(), overlay.y * page_rect.height())
             self.scene.addItem(item)
             self.overlay_items[overlay.id] = item
@@ -529,35 +699,48 @@ class MainWindow(QMainWindow):
 
     def render_page_pixmap(self, page: PageModel, target_long_edge: int = 900, include_overlays: bool = True) -> QPixmap:
         try:
+            rotation = page.rotation % 360
             if page.kind == "pdf" and page.source is not None and page.page_index is not None:
                 doc = fitz.open(page.source)
                 src_page = doc.load_page(page.page_index)
-                scale = target_long_edge / max(src_page.rect.width, src_page.rect.height)
-                pix = src_page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                page_w, page_h = self._rotated_page_size(src_page.rect.width, src_page.rect.height, rotation)
+                scale = target_long_edge / max(page_w, page_h)
+                pix = src_page.get_pixmap(matrix=fitz.Matrix(scale, scale).prerotate(rotation), alpha=False)
                 qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
                 doc.close()
                 base = QPixmap.fromImage(qimg)
             else:
-                scale = target_long_edge / max(page.width_pt, page.height_pt)
-                width = max(1, int(page.width_pt * scale))
-                height = max(1, int(page.height_pt * scale))
+                page_w, page_h = self._rotated_page_size(page.width_pt, page.height_pt, rotation)
+                scale = target_long_edge / max(page_w, page_h)
+                width = max(1, int(page_w * scale))
+                height = max(1, int(page_h * scale))
                 base = QPixmap(width, height)
                 base.fill(Qt.GlobalColor.white)
                 if page.kind == "image" and page.source:
                     img = QPixmap(page.source)
                     if not img.isNull():
-                        margin = max(12, int(min(width, height) * 0.035))
-                        fitted = img.scaled(
-                            width - 2 * margin,
-                            height - 2 * margin,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
+                        image_rect = self._fit_rect(
+                            page.width_pt,
+                            page.height_pt,
+                            img.width(),
+                            img.height(),
+                            margin=max(8.0, min(page.width_pt, page.height_pt) * 0.035),
                         )
+                        image_rect = self._rotate_rect(image_rect, page.width_pt, page.height_pt, rotation)
+                        target_rect = QRectF(
+                            image_rect.x0 * scale,
+                            image_rect.y0 * scale,
+                            image_rect.width * scale,
+                            image_rect.height * scale,
+                        )
+                        if rotation:
+                            img = img.transformed(
+                                QTransform().rotate(rotation),
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
                         painter = QPainter(base)
                         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-                        x = (width - fitted.width()) // 2
-                        y = (height - fitted.height()) // 2
-                        painter.drawPixmap(x, y, fitted)
+                        painter.drawPixmap(target_rect, img, img.rect())
                         painter.end()
 
             if include_overlays and page.overlays:
@@ -567,13 +750,23 @@ class MainWindow(QMainWindow):
                     img = QPixmap(overlay.path)
                     if img.isNull():
                         continue
+                    if rotation:
+                        img = img.transformed(
+                            QTransform().rotate(rotation),
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
                     rect = QRectF(
                         overlay.x * base.width(),
                         overlay.y * base.height(),
                         overlay.w * base.width(),
                         overlay.h * base.height(),
                     )
-                    painter.drawPixmap(rect, img, img.rect())
+                    painter.save()
+                    painter.translate(rect.center())
+                    painter.rotate(overlay.rotation)
+                    centered = QRectF(-rect.width() / 2, -rect.height() / 2, rect.width(), rect.height())
+                    painter.drawPixmap(centered, img, img.rect())
+                    painter.restore()
                 painter.end()
             return base
         except Exception:
@@ -583,14 +776,16 @@ class MainWindow(QMainWindow):
 
     def _set_thumbnail(self, item: QListWidgetItem, page: PageModel) -> None:
         pixmap = self.render_page_pixmap(page, target_long_edge=430, include_overlays=True)
-        thumb = QPixmap(150, 205)
-        thumb.fill(QColor("#111318"))
+        max_w = 176
+        max_h = 205
         fitted = pixmap.scaled(
-            144,
-            199,
+            max_w - 8,
+            max_h - 8,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        thumb = QPixmap(fitted.width() + 8, fitted.height() + 8)
+        thumb.fill(QColor("#111318"))
         painter = QPainter(thumb)
         painter.setPen(QPen(QColor("#4b515d"), 1))
         x = (thumb.width() - fitted.width()) // 2
@@ -601,6 +796,7 @@ class MainWindow(QMainWindow):
         painter.end()
         self.thumbnail_cache[page.id] = thumb
         item.setIcon(QIcon(thumb))
+        item.setSizeHint(QSize(max(thumb.width() + 18, 96), thumb.height() + 42))
 
     def _refresh_current_thumbnail(self) -> None:
         if not self.current_page_id:
@@ -610,6 +806,103 @@ class MainWindow(QMainWindow):
             if item.data(Qt.ItemDataRole.UserRole) == self.current_page_id:
                 self._set_thumbnail(item, self.pages[self.current_page_id])
                 break
+
+    @staticmethod
+    def _rotate_overlay(overlay: OverlayModel, delta: int) -> None:
+        if delta % 360 == 90:
+            overlay.x, overlay.y, overlay.w, overlay.h = (
+                1.0 - overlay.y - overlay.h,
+                overlay.x,
+                overlay.h,
+                overlay.w,
+            )
+        elif delta % 360 == 270:
+            overlay.x, overlay.y, overlay.w, overlay.h = (
+                overlay.y,
+                1.0 - overlay.x - overlay.w,
+                overlay.h,
+                overlay.w,
+            )
+        elif delta % 360 == 180:
+            overlay.x, overlay.y = (
+                1.0 - overlay.x - overlay.w,
+                1.0 - overlay.y - overlay.h,
+            )
+        overlay.x = min(max(overlay.x, 0.0), 1.0)
+        overlay.y = min(max(overlay.y, 0.0), 1.0)
+        overlay.w = min(max(overlay.w, 0.001), 1.0)
+        overlay.h = min(max(overlay.h, 0.001), 1.0)
+
+    @staticmethod
+    def _rotated_page_size(width: float, height: float, rotation: int) -> Tuple[float, float]:
+        if rotation % 180:
+            return height, width
+        return width, height
+
+    @staticmethod
+    def _rotate_rect(rect: fitz.Rect, width: float, height: float, rotation: int) -> fitz.Rect:
+        rotation = rotation % 360
+        if rotation == 90:
+            return fitz.Rect(height - rect.y1, rect.x0, height - rect.y0, rect.x1)
+        if rotation == 180:
+            return fitz.Rect(width - rect.x1, height - rect.y1, width - rect.x0, height - rect.y0)
+        if rotation == 270:
+            return fitz.Rect(rect.y0, width - rect.x1, rect.y1, width - rect.x0)
+        return rect
+
+    @staticmethod
+    def _rotated_rect_bounds(rect: fitz.Rect, rotation: float) -> fitz.Rect:
+        angle = math.radians(rotation % 360)
+        cos_a = abs(math.cos(angle))
+        sin_a = abs(math.sin(angle))
+        width = rect.width
+        height = rect.height
+        rotated_w = width * cos_a + height * sin_a
+        rotated_h = width * sin_a + height * cos_a
+        center_x = (rect.x0 + rect.x1) / 2
+        center_y = (rect.y0 + rect.y1) / 2
+        return fitz.Rect(
+            center_x - rotated_w / 2,
+            center_y - rotated_h / 2,
+            center_x + rotated_w / 2,
+            center_y + rotated_h / 2,
+        )
+
+    @staticmethod
+    def _rotated_image_stream(path: str, rotation: float) -> bytes:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            with Image.open(path) as img:
+                rotated = img.convert("RGBA").rotate(
+                    -rotation,
+                    expand=True,
+                    resample=Image.Resampling.BICUBIC,
+                )
+                output = BytesIO()
+                rotated.save(output, format="PNG")
+                return output.getvalue()
+
+        angle = math.radians(rotation % 360)
+        cos_a = abs(math.cos(angle))
+        sin_a = abs(math.sin(angle))
+        width = max(1, math.ceil(pixmap.width() * cos_a + pixmap.height() * sin_a))
+        height = max(1, math.ceil(pixmap.width() * sin_a + pixmap.height() * cos_a))
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.translate(width / 2, height / 2)
+        painter.rotate(rotation)
+        painter.drawPixmap(
+            QRectF(-pixmap.width() / 2, -pixmap.height() / 2, pixmap.width(), pixmap.height()),
+            pixmap,
+            pixmap.rect(),
+        )
+        painter.end()
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(buffer.data())
 
     @staticmethod
     def _fit_rect(page_w: float, page_h: float, image_w: int, image_h: int, margin: float = 20.0) -> fitz.Rect:
@@ -645,29 +938,39 @@ class MainWindow(QMainWindow):
                     output.close()
                     return
                 model = self.pages[page_id]
-                page = output.new_page(width=model.width_pt, height=model.height_pt)
+                rotation = model.rotation % 360
+                fitz_rotation = (-rotation) % 360
+                page_w, page_h = self._rotated_page_size(model.width_pt, model.height_pt, rotation)
+                page = output.new_page(width=page_w, height=page_h)
 
                 if model.kind == "pdf" and model.source is not None and model.page_index is not None:
                     if model.source not in source_docs:
                         source_docs[model.source] = fitz.open(model.source)
-                    page.show_pdf_page(page.rect, source_docs[model.source], model.page_index)
+                    page.show_pdf_page(page.rect, source_docs[model.source], model.page_index, rotate=fitz_rotation)
                 elif model.kind == "image" and model.source:
                     try:
                         with Image.open(model.source) as img:
                             iw, ih = img.size
                         rect = self._fit_rect(model.width_pt, model.height_pt, iw, ih)
-                        page.insert_image(rect, filename=model.source, keep_proportion=True)
+                        rect = self._rotate_rect(rect, model.width_pt, model.height_pt, rotation)
+                        page.insert_image(rect, filename=model.source, keep_proportion=True, rotate=fitz_rotation)
                     except Exception as exc:
                         raise RuntimeError(f"No se pudo insertar {model.source}: {exc}") from exc
 
                 for overlay in model.overlays:
                     rect = fitz.Rect(
-                        overlay.x * model.width_pt,
-                        overlay.y * model.height_pt,
-                        (overlay.x + overlay.w) * model.width_pt,
-                        (overlay.y + overlay.h) * model.height_pt,
+                        overlay.x * page_w,
+                        overlay.y * page_h,
+                        (overlay.x + overlay.w) * page_w,
+                        (overlay.y + overlay.h) * page_h,
                     )
-                    page.insert_image(rect, filename=overlay.path, keep_proportion=False, overlay=True)
+                    overlay_rotation = (rotation + overlay.rotation) % 360
+                    if overlay_rotation:
+                        bounds = self._rotated_rect_bounds(rect, overlay_rotation)
+                        stream = self._rotated_image_stream(overlay.path, overlay_rotation)
+                        page.insert_image(bounds, stream=stream, keep_proportion=False, overlay=True)
+                    else:
+                        page.insert_image(rect, filename=overlay.path, keep_proportion=False, overlay=True)
 
                 progress.setValue(idx + 1)
                 QApplication.processEvents()
