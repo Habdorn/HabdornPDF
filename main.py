@@ -339,11 +339,15 @@ class PreviewView(QGraphicsView):
 
 
 class PageListWidget(QListWidget):
-    native_drop_finished = Signal()
+    native_drop_finished = Signal(list, list)
 
     def dropEvent(self, event) -> None:
+        old_order = self._ordered_page_ids()
         super().dropEvent(event)
-        QTimer.singleShot(0, self.native_drop_finished.emit)
+        QTimer.singleShot(0, lambda: self.native_drop_finished.emit(old_order, self._ordered_page_ids()))
+
+    def _ordered_page_ids(self) -> List[str]:
+        return [self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count())]
 
 
 class InsertPagesCommand(QUndoCommand):
@@ -386,6 +390,24 @@ class RotatePagesCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.window._rotate_pages_direct(self.page_ids, -self.delta)
+
+
+class ReorderPagesCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", old_order: List[str], new_order: List[str], skip_first_redo: bool = True):
+        super().__init__("Reordenar páginas")
+        self.window = window
+        self.old_order = list(old_order)
+        self.new_order = list(new_order)
+        self.skip_first_redo = skip_first_redo
+
+    def redo(self) -> None:
+        if self.skip_first_redo:
+            self.skip_first_redo = False
+            return
+        self.window._apply_page_order(self.new_order)
+
+    def undo(self) -> None:
+        self.window._apply_page_order(self.old_order)
 
 
 class InsertOverlayCommand(QUndoCommand):
@@ -467,7 +489,7 @@ class MainWindow(QMainWindow):
         self.page_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.page_list.setSpacing(12)
         self.page_list.currentItemChanged.connect(self.on_page_changed)
-        self.page_list.native_drop_finished.connect(self.refresh_thumbnail_layout)
+        self.page_list.native_drop_finished.connect(self.on_native_drop_finished)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -614,6 +636,67 @@ class MainWindow(QMainWindow):
     def ordered_page_ids(self) -> List[str]:
         return [self.page_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.page_list.count())]
 
+    @staticmethod
+    def _is_valid_page_order(order: List[str], expected: List[str]) -> bool:
+        return len(order) == len(expected) and len(set(order)) == len(order) and set(order) == set(expected)
+
+    def on_native_drop_finished(self, old_order: List[str], new_order: List[str]) -> None:
+        current_order = self.ordered_page_ids()
+        if old_order == new_order:
+            self.refresh_thumbnail_layout()
+            return
+        if not self._is_valid_page_order(old_order, current_order):
+            self.refresh_thumbnail_layout()
+            return
+        if not self._is_valid_page_order(new_order, current_order):
+            self.refresh_thumbnail_layout()
+            return
+        self.undo_stack.push(ReorderPagesCommand(self, old_order, new_order, skip_first_redo=True))
+        self.refresh_thumbnail_layout()
+
+    def _apply_page_order(self, order: List[str]) -> None:
+        current_order = self.ordered_page_ids()
+        if not self._is_valid_page_order(order, current_order):
+            return
+
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self.page_list.selectedItems()
+        }
+        current_id = self.current_page_id if self.current_page_id in self.pages else None
+
+        was_blocked = self.page_list.blockSignals(True)
+        self._changing_selection = True
+        try:
+            items_by_id = {}
+            while self.page_list.count():
+                item = self.page_list.takeItem(0)
+                items_by_id[item.data(Qt.ItemDataRole.UserRole)] = item
+
+            for page_id in order:
+                self.page_list.addItem(items_by_id[page_id])
+            self.page_list.clearSelection()
+            target_current_id = current_id if current_id in order else (order[0] if order else None)
+            for index in range(self.page_list.count()):
+                item = self.page_list.item(index)
+                page_id = item.data(Qt.ItemDataRole.UserRole)
+                item.setSelected(page_id in selected_ids)
+                if page_id == target_current_id:
+                    self.page_list.setCurrentRow(index)
+        finally:
+            self._changing_selection = False
+            self.page_list.blockSignals(was_blocked)
+
+        if current_id and current_id in order:
+            self.load_page_into_preview(current_id)
+        elif order:
+            self.load_page_into_preview(order[0])
+        else:
+            self.current_page_id = None
+            self.scene.clear()
+            self.overlay_items.clear()
+        self.refresh_thumbnail_layout()
+
     def _insert_page_models(self, models: List[PageModel], command_text: str = "Agregar página") -> None:
         if not models:
             return
@@ -694,7 +777,11 @@ class MainWindow(QMainWindow):
                 doc.close()
             except Exception as exc:
                 QMessageBox.critical(self, APP_NAME, f"No se pudo abrir:\n{path}\n\n{exc}")
-        self._insert_page_models(models, "Agregar PDF")
+        if models:
+            current_row = self.page_list.currentRow()
+            insert_at = current_row + 1 if current_row >= 0 else self.page_list.count()
+            self._insert_page_models_direct(models, insert_at)
+            self.undo_stack.clear()
 
     def add_images_as_pages(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
