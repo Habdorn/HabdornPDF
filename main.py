@@ -753,6 +753,7 @@ class MainWindow(QMainWindow):
         self.refresh_thumbnail_layout()
 
     def add_pdfs(self) -> None:
+        document_was_empty = len(self.pages) == 0 and self.page_list.count() == 0
         paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar PDF", "", "Archivos PDF (*.pdf)")
         models: List[PageModel] = []
         for path in paths:
@@ -779,10 +780,13 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 QMessageBox.critical(self, APP_NAME, f"No se pudo abrir:\n{path}\n\n{exc}")
         if models:
-            current_row = self.page_list.currentRow()
-            insert_at = current_row + 1 if current_row >= 0 else self.page_list.count()
-            self._insert_page_models_direct(models, insert_at)
-            self.undo_stack.clear()
+            if document_was_empty:
+                current_row = self.page_list.currentRow()
+                insert_at = current_row + 1 if current_row >= 0 else self.page_list.count()
+                self._insert_page_models_direct(models, insert_at)
+                self.undo_stack.clear()
+                return
+            self._insert_page_models(models, "Agregar PDF")
 
     def add_images_as_pages(self) -> None:
         was_empty = not self.pages and self.page_list.count() == 0
