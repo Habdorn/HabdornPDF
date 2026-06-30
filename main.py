@@ -512,8 +512,15 @@ class MainWindow(QMainWindow):
         self.redo_action = self.undo_stack.createRedoAction(self, "Rehacer")
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        toolbar.addAction(self.undo_action)
-        toolbar.addAction(self.redo_action)
+        self.toolbar_undo_action = QAction("Deshacer", self)
+        self.toolbar_undo_action.triggered.connect(self.undo_action.trigger)
+        self.toolbar_redo_action = QAction("Rehacer", self)
+        self.toolbar_redo_action.triggered.connect(self.redo_action.trigger)
+        self.undo_action.changed.connect(self._sync_toolbar_undo_redo_actions)
+        self.redo_action.changed.connect(self._sync_toolbar_undo_redo_actions)
+        self._sync_toolbar_undo_redo_actions()
+        toolbar.addAction(self.toolbar_undo_action)
+        toolbar.addAction(self.toolbar_redo_action)
         toolbar.addSeparator()
 
         actions = [
@@ -533,6 +540,14 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
             if text in {"+ Página en blanco", "Eliminar página"}:
                 toolbar.addSeparator()
+
+    def _sync_toolbar_undo_redo_actions(self) -> None:
+        self.toolbar_undo_action.setText("Deshacer")
+        self.toolbar_undo_action.setToolTip(self.undo_action.text())
+        self.toolbar_undo_action.setEnabled(self.undo_action.isEnabled())
+        self.toolbar_redo_action.setText("Rehacer")
+        self.toolbar_redo_action.setToolTip(self.redo_action.text())
+        self.toolbar_redo_action.setEnabled(self.redo_action.isEnabled())
 
     def _build_menu(self) -> None:
         self.file_menu = self.menuBar().addMenu("Archivo")
