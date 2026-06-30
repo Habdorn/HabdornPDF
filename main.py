@@ -4,6 +4,7 @@ import os
 import sys
 import uuid
 import math
+from copy import deepcopy
 from io import BytesIO
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +13,21 @@ from typing import Dict, List, Optional, Tuple
 import fitz  # PyMuPDF
 from PIL import Image
 from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QTransform
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QBrush,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
+    QTransform,
+    QUndoCommand,
+    QUndoStack,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -90,6 +105,8 @@ class OverlayGraphicsItem(QGraphicsItem):
         self.setZValue(10)
         self.setTransformOriginPoint(self._rect.center())
         self.setRotation(rotation)
+        self.geometry_committed = None
+        self._undo_geometry_state = None
 
     def rect(self) -> QRectF:
         return QRectF(self._rect)
@@ -148,6 +165,8 @@ class OverlayGraphicsItem(QGraphicsItem):
             painter.drawEllipse(self.rotate_handle_rect())
 
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._undo_geometry_state = self._geometry_state()
         handle = self.handle_at(event.pos())
         if event.button() == Qt.MouseButton.LeftButton and handle == "rotate":
             self._rotating = True
@@ -193,6 +212,10 @@ class OverlayGraphicsItem(QGraphicsItem):
         self._rotating = False
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().mouseReleaseEvent(event)
+        new_state = self._geometry_state()
+        if self._undo_geometry_state and self._undo_geometry_state != new_state and self.geometry_committed:
+            self.geometry_committed(self.model_id, self._undo_geometry_state, new_state)
+        self._undo_geometry_state = None
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
@@ -273,6 +296,18 @@ class OverlayGraphicsItem(QGraphicsItem):
         if dx or dy:
             self.moveBy(dx, dy)
 
+    def _geometry_state(self) -> Tuple[float, float, float, float, float, float, float]:
+        pos = self.pos()
+        return (
+            pos.x(),
+            pos.y(),
+            self._rect.x(),
+            self._rect.y(),
+            self._rect.width(),
+            self._rect.height(),
+            self.overlay_rotation(),
+        )
+
 
 class PreviewView(QGraphicsView):
     delete_pressed = Signal()
@@ -311,6 +346,91 @@ class PageListWidget(QListWidget):
         QTimer.singleShot(0, self.native_drop_finished.emit)
 
 
+class InsertPagesCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", models: List[PageModel], insert_at: int, text: str):
+        super().__init__(text)
+        self.window = window
+        self.models = [deepcopy(model) for model in models]
+        self.insert_at = insert_at
+
+    def redo(self) -> None:
+        self.window._insert_page_models_direct(self.models, self.insert_at)
+
+    def undo(self) -> None:
+        self.window._remove_page_ids_direct([model.id for model in self.models], select_row=max(0, self.insert_at - 1))
+
+
+class DeletePagesCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", rows_and_models: List[Tuple[int, PageModel]]):
+        super().__init__("Eliminar página")
+        self.window = window
+        self.rows_and_models = [(row, deepcopy(model)) for row, model in rows_and_models]
+
+    def redo(self) -> None:
+        self.window._remove_page_ids_direct([model.id for _, model in self.rows_and_models])
+
+    def undo(self) -> None:
+        for row, model in sorted(self.rows_and_models, key=lambda item: item[0]):
+            self.window._insert_page_models_direct([model], row)
+
+
+class RotatePagesCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", page_ids: List[str], delta: int):
+        super().__init__("Rotar página")
+        self.window = window
+        self.page_ids = list(page_ids)
+        self.delta = delta
+
+    def redo(self) -> None:
+        self.window._rotate_pages_direct(self.page_ids, self.delta)
+
+    def undo(self) -> None:
+        self.window._rotate_pages_direct(self.page_ids, -self.delta)
+
+
+class InsertOverlayCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", page_id: str, overlay: OverlayModel):
+        super().__init__("Insertar imagen")
+        self.window = window
+        self.page_id = page_id
+        self.overlay = deepcopy(overlay)
+
+    def redo(self) -> None:
+        self.window._insert_overlay_direct(self.page_id, self.overlay)
+
+    def undo(self) -> None:
+        self.window._remove_overlay_ids_direct(self.page_id, [self.overlay.id])
+
+
+class DeleteOverlaysCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", page_id: str, overlays: List[Tuple[int, OverlayModel]]):
+        super().__init__("Eliminar imagen")
+        self.window = window
+        self.page_id = page_id
+        self.overlays = [(index, deepcopy(overlay)) for index, overlay in overlays]
+
+    def redo(self) -> None:
+        self.window._remove_overlay_ids_direct(self.page_id, [overlay.id for _, overlay in self.overlays])
+
+    def undo(self) -> None:
+        self.window._insert_overlays_direct(self.page_id, self.overlays)
+
+
+class UpdateOverlayCommand(QUndoCommand):
+    def __init__(self, window: "MainWindow", page_id: str, before: OverlayModel, after: OverlayModel, text: str):
+        super().__init__(text)
+        self.window = window
+        self.page_id = page_id
+        self.before = deepcopy(before)
+        self.after = deepcopy(after)
+
+    def redo(self) -> None:
+        self.window._replace_overlay_direct(self.page_id, self.after)
+
+    def undo(self) -> None:
+        self.window._replace_overlay_direct(self.page_id, self.before)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -323,6 +443,7 @@ class MainWindow(QMainWindow):
         self.overlay_items: Dict[str, OverlayGraphicsItem] = {}
         self.thumbnail_cache: Dict[str, QPixmap] = {}
         self._changing_selection = False
+        self.undo_stack = QUndoStack(self)
 
         self.scene = QGraphicsScene(self)
         self.preview = PreviewView(self.scene)
@@ -375,6 +496,7 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._build_menu()
+        self._build_undo_shortcuts()
         self._apply_style()
         self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
 
@@ -383,6 +505,16 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(toolbar)
+
+        self.undo_action = self.undo_stack.createUndoAction(self, "Deshacer")
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.redo_action = self.undo_stack.createRedoAction(self, "Rehacer")
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        toolbar.addAction(self.undo_action)
+        toolbar.addAction(self.redo_action)
+        toolbar.addSeparator()
 
         actions = [
             ("+ PDF", self.add_pdfs),
@@ -403,7 +535,8 @@ class MainWindow(QMainWindow):
                 toolbar.addSeparator()
 
     def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("Archivo")
+        self.file_menu = self.menuBar().addMenu("Archivo")
+        file_menu = self.file_menu
         add_pdf = QAction("Añadir PDF", self)
         add_pdf.setShortcut(QKeySequence.StandardKey.Open)
         add_pdf.triggered.connect(self.add_pdfs)
@@ -419,7 +552,13 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        page_menu = self.menuBar().addMenu("Página")
+        self.edit_menu = self.menuBar().addMenu("Editar")
+        edit_menu = self.edit_menu
+        edit_menu.addAction(self.undo_action)
+        edit_menu.addAction(self.redo_action)
+
+        self.page_menu = self.menuBar().addMenu("Página")
+        page_menu = self.page_menu
         rotate_left = QAction("Rotar izquierda", self)
         rotate_left.setShortcut(QKeySequence("Ctrl+Shift+L"))
         rotate_left.triggered.connect(lambda: self.rotate_selected_pages(-90))
@@ -429,6 +568,11 @@ class MainWindow(QMainWindow):
         rotate_right.setShortcut(QKeySequence("Ctrl+Shift+R"))
         rotate_right.triggered.connect(lambda: self.rotate_selected_pages(90))
         page_menu.addAction(rotate_right)
+
+    def _build_undo_shortcuts(self) -> None:
+        self.redo_shift_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self.redo_shift_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.redo_shift_shortcut.activated.connect(self.undo_stack.redo)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -455,19 +599,26 @@ class MainWindow(QMainWindow):
     def ordered_page_ids(self) -> List[str]:
         return [self.page_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.page_list.count())]
 
-    def _insert_page_models(self, models: List[PageModel]) -> None:
+    def _insert_page_models(self, models: List[PageModel], command_text: str = "Agregar página") -> None:
         if not models:
             return
         current_row = self.page_list.currentRow()
         insert_at = current_row + 1 if current_row >= 0 else self.page_list.count()
+        self.undo_stack.push(InsertPagesCommand(self, models, insert_at, command_text))
+
+    def _insert_page_models_direct(self, models: List[PageModel], insert_at: int) -> None:
+        if not models:
+            return
+        insert_at = min(max(insert_at, 0), self.page_list.count())
         for offset, model in enumerate(models):
-            self.pages[model.id] = model
-            item = QListWidgetItem(model.label)
-            item.setData(Qt.ItemDataRole.UserRole, model.id)
+            stored_model = deepcopy(model)
+            self.pages[stored_model.id] = stored_model
+            item = QListWidgetItem(stored_model.label)
+            item.setData(Qt.ItemDataRole.UserRole, stored_model.id)
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
-            item.setToolTip(model.label)
+            item.setToolTip(stored_model.label)
             self.page_list.insertItem(insert_at + offset, item)
-            self._set_thumbnail(item, model)
+            self._set_thumbnail(item, stored_model)
         self.page_list.clearSelection()
         self.page_list.setCurrentRow(insert_at)
         current = self.page_list.item(insert_at)
@@ -475,6 +626,32 @@ class MainWindow(QMainWindow):
             current.setSelected(True)
         self.refresh_thumbnail_layout()
         self.statusBar().showMessage(f"{len(models)} página(s) añadida(s)", 4000)
+
+    def _remove_page_ids_direct(self, page_ids: List[str], select_row: Optional[int] = None) -> None:
+        ids = set(page_ids)
+        removed_rows = []
+        self.save_current_overlay_positions()
+        for row in range(self.page_list.count() - 1, -1, -1):
+            item = self.page_list.item(row)
+            page_id = item.data(Qt.ItemDataRole.UserRole)
+            if page_id not in ids:
+                continue
+            removed_rows.append(row)
+            self.page_list.takeItem(row)
+            self.pages.pop(page_id, None)
+            self.thumbnail_cache.pop(page_id, None)
+        if self.current_page_id in ids:
+            self.current_page_id = None
+            self.scene.clear()
+            self.overlay_items.clear()
+        if self.page_list.count():
+            target = select_row
+            if target is None:
+                target = min(min(removed_rows) if removed_rows else 0, self.page_list.count() - 1)
+            self.page_list.setCurrentRow(min(max(target, 0), self.page_list.count() - 1))
+        else:
+            self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
+        self.refresh_thumbnail_layout()
 
     def add_pdfs(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar PDF", "", "Archivos PDF (*.pdf)")
@@ -502,7 +679,7 @@ class MainWindow(QMainWindow):
                 doc.close()
             except Exception as exc:
                 QMessageBox.critical(self, APP_NAME, f"No se pudo abrir:\n{path}\n\n{exc}")
-        self._insert_page_models(models)
+        self._insert_page_models(models, "Agregar PDF")
 
     def add_images_as_pages(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -532,7 +709,7 @@ class MainWindow(QMainWindow):
                 )
             except Exception as exc:
                 QMessageBox.warning(self, APP_NAME, f"No se pudo leer la imagen:\n{path}\n\n{exc}")
-        self._insert_page_models(models)
+        self._insert_page_models(models, "Agregar imagen como página")
 
     def add_blank_page(self) -> None:
         model = PageModel(
@@ -542,7 +719,7 @@ class MainWindow(QMainWindow):
             height_pt=A4_PORTRAIT[1],
             label="Página en blanco\nA4",
         )
-        self._insert_page_models([model])
+        self._insert_page_models([model], "Agregar página en blanco")
 
     def add_overlay_image(self) -> None:
         if not self.current_page_id:
@@ -578,8 +755,7 @@ class MainWindow(QMainWindow):
             w=norm_w,
             h=norm_h,
         )
-        page.overlays.append(overlay)
-        self.load_page_into_preview(page.id)
+        self.undo_stack.push(InsertOverlayCommand(self, page.id, overlay))
         self.statusBar().showMessage("Imagen insertada: arrástrala y redimensiónala", 4500)
 
     def delete_selected_overlays(self) -> None:
@@ -594,31 +770,26 @@ class MainWindow(QMainWindow):
             return
         self.save_current_overlay_positions()
         page = self.pages[self.current_page_id]
-        page.overlays = [o for o in page.overlays if o.id not in selected_ids]
-        self.load_page_into_preview(page.id)
-        self._refresh_current_thumbnail()
+        overlays = [
+            (index, deepcopy(overlay))
+            for index, overlay in enumerate(page.overlays)
+            if overlay.id in selected_ids
+        ]
+        self.undo_stack.push(DeleteOverlaysCommand(self, page.id, overlays))
 
     def delete_selected_pages(self) -> None:
         selected = self.page_list.selectedItems()
         if not selected:
             return
         self.save_current_overlay_positions()
-        rows = sorted((self.page_list.row(item) for item in selected), reverse=True)
-        removed_ids = []
-        for row in rows:
-            item = self.page_list.takeItem(row)
-            if item:
-                removed_ids.append(item.data(Qt.ItemDataRole.UserRole))
-        for page_id in removed_ids:
-            self.pages.pop(page_id, None)
-            self.thumbnail_cache.pop(page_id, None)
-        self.current_page_id = None
-        self.scene.clear()
-        if self.page_list.count():
-            self.page_list.setCurrentRow(min(rows[-1] if rows else 0, self.page_list.count() - 1))
-        else:
-            self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
-        self.refresh_thumbnail_layout()
+        rows_and_models = []
+        for item in selected:
+            row = self.page_list.row(item)
+            page_id = item.data(Qt.ItemDataRole.UserRole)
+            page = self.pages.get(page_id)
+            if page:
+                rows_and_models.append((row, deepcopy(page)))
+        self.undo_stack.push(DeletePagesCommand(self, rows_and_models))
 
     def rotate_selected_pages(self, delta: int) -> None:
         selected = self.page_list.selectedItems()
@@ -626,6 +797,10 @@ class MainWindow(QMainWindow):
             return
         self.save_current_overlay_positions()
         selected_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        self.undo_stack.push(RotatePagesCommand(self, selected_ids, delta))
+
+    def _rotate_pages_direct(self, page_ids: List[str], delta: int) -> None:
+        selected_ids = [page_id for page_id in page_ids if page_id in self.pages]
         for page_id in selected_ids:
             page = self.pages.get(page_id)
             if not page:
@@ -681,6 +856,88 @@ class MainWindow(QMainWindow):
             model.rotation = item.overlay_rotation()
         self._refresh_current_thumbnail()
 
+    def _insert_overlay_direct(self, page_id: str, overlay: OverlayModel) -> None:
+        page = self.pages.get(page_id)
+        if not page:
+            return
+        self._insert_overlays_direct(page_id, [(len(page.overlays), overlay)])
+
+    def _insert_overlays_direct(self, page_id: str, overlays: List[Tuple[int, OverlayModel]]) -> None:
+        page = self.pages.get(page_id)
+        if not page:
+            return
+        for index, overlay in sorted(overlays, key=lambda item: item[0]):
+            page.overlays.insert(min(max(index, 0), len(page.overlays)), deepcopy(overlay))
+        if self.current_page_id == page_id:
+            self.load_page_into_preview(page_id)
+        self._refresh_page_thumbnail(page_id)
+
+    def _remove_overlay_ids_direct(self, page_id: str, overlay_ids: List[str]) -> None:
+        page = self.pages.get(page_id)
+        if not page:
+            return
+        ids = set(overlay_ids)
+        page.overlays = [overlay for overlay in page.overlays if overlay.id not in ids]
+        if self.current_page_id == page_id:
+            self.load_page_into_preview(page_id)
+        self._refresh_page_thumbnail(page_id)
+
+    def _replace_overlay_direct(self, page_id: str, overlay: OverlayModel) -> None:
+        page = self.pages.get(page_id)
+        if not page:
+            return
+        for index, current in enumerate(page.overlays):
+            if current.id == overlay.id:
+                page.overlays[index] = deepcopy(overlay)
+                break
+        if self.current_page_id == page_id:
+            self.load_page_into_preview(page_id)
+        self._refresh_page_thumbnail(page_id)
+
+    def _overlay_from_item_state(
+        self,
+        page_id: str,
+        overlay_id: str,
+        state: Tuple[float, float, float, float, float, float, float],
+    ) -> Optional[OverlayModel]:
+        page = self.pages.get(page_id)
+        if not page:
+            return None
+        source = next((overlay for overlay in page.overlays if overlay.id == overlay_id), None)
+        if not source:
+            return None
+        scene_rect = self.scene.sceneRect()
+        pw = max(1.0, scene_rect.width())
+        ph = max(1.0, scene_rect.height())
+        pos_x, pos_y, rect_x, rect_y, rect_w, rect_h, rotation = state
+        overlay = deepcopy(source)
+        overlay.x = min(max((pos_x + rect_x) / pw, 0.0), 1.0)
+        overlay.y = min(max((pos_y + rect_y) / ph, 0.0), 1.0)
+        overlay.w = min(max(rect_w / pw, 0.001), 1.0)
+        overlay.h = min(max(rect_h / ph, 0.001), 1.0)
+        overlay.rotation = rotation
+        return overlay
+
+    def _overlay_geometry_committed(
+        self,
+        overlay_id: str,
+        before_state: Tuple[float, float, float, float, float, float, float],
+        after_state: Tuple[float, float, float, float, float, float, float],
+    ) -> None:
+        if not self.current_page_id:
+            return
+        before = self._overlay_from_item_state(self.current_page_id, overlay_id, before_state)
+        after = self._overlay_from_item_state(self.current_page_id, overlay_id, after_state)
+        if not before or not after:
+            return
+        if before.rotation != after.rotation:
+            text = "Rotar imagen"
+        elif before.w != after.w or before.h != after.h:
+            text = "Redimensionar imagen"
+        else:
+            text = "Mover imagen"
+        self.undo_stack.push(UpdateOverlayCommand(self, self.current_page_id, before, after, text))
+
     def load_page_into_preview(self, page_id: str) -> None:
         page = self.pages.get(page_id)
         if not page:
@@ -709,6 +966,7 @@ class MainWindow(QMainWindow):
                 )
             rect = QRectF(0, 0, overlay.w * page_rect.width(), overlay.h * page_rect.height())
             item = OverlayGraphicsItem(overlay.id, pixmap, rect, page_rect, overlay.rotation)
+            item.geometry_committed = self._overlay_geometry_committed
             item.setPos(overlay.x * page_rect.width(), overlay.y * page_rect.height())
             self.scene.addItem(item)
             self.overlay_items[overlay.id] = item
@@ -821,10 +1079,15 @@ class MainWindow(QMainWindow):
     def _refresh_current_thumbnail(self) -> None:
         if not self.current_page_id:
             return
+        self._refresh_page_thumbnail(self.current_page_id)
+
+    def _refresh_page_thumbnail(self, page_id: str) -> None:
+        if page_id not in self.pages:
+            return
         for i in range(self.page_list.count()):
             item = self.page_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == self.current_page_id:
-                self._set_thumbnail(item, self.pages[self.current_page_id])
+            if item.data(Qt.ItemDataRole.UserRole) == page_id:
+                self._set_thumbnail(item, self.pages[page_id])
                 break
         self.refresh_thumbnail_layout()
 
