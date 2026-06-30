@@ -466,6 +466,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_cache: Dict[str, QPixmap] = {}
         self._changing_selection = False
         self.undo_stack = QUndoStack(self)
+        self.undo_stack.setUndoLimit(20)
 
         self.scene = QGraphicsScene(self)
         self.preview = PreviewView(self.scene)
@@ -784,6 +785,7 @@ class MainWindow(QMainWindow):
             self.undo_stack.clear()
 
     def add_images_as_pages(self) -> None:
+        was_empty = not self.pages and self.page_list.count() == 0
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Seleccionar imágenes",
@@ -811,6 +813,12 @@ class MainWindow(QMainWindow):
                 )
             except Exception as exc:
                 QMessageBox.warning(self, APP_NAME, f"No se pudo leer la imagen:\n{path}\n\n{exc}")
+        if not models:
+            return
+        if was_empty:
+            self._insert_page_models_direct(models, self.page_list.count())
+            self.undo_stack.clear()
+            return
         self._insert_page_models(models, "Agregar imagen como página")
 
     def add_blank_page(self) -> None:
