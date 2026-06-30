@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
-from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QBuffer, QIODevice, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -302,6 +303,14 @@ class PreviewView(QGraphicsView):
         super().keyPressEvent(event)
 
 
+class PageListWidget(QListWidget):
+    native_drop_finished = Signal()
+
+    def dropEvent(self, event) -> None:
+        super().dropEvent(event)
+        QTimer.singleShot(0, self.native_drop_finished.emit)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -319,17 +328,25 @@ class MainWindow(QMainWindow):
         self.preview = PreviewView(self.scene)
         self.preview.delete_pressed.connect(self.delete_selected_overlays)
 
-        self.page_list = QListWidget()
-        self.page_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.page_list = PageListWidget()
+        self.page_list.setViewMode(QListView.ViewMode.ListMode)
         self.page_list.setIconSize(QSize(176, 205))
-        self.page_list.setGridSize(QSize())
+        self.page_list.setFlow(QListView.Flow.TopToBottom)
+        self.page_list.setWrapping(False)
+        self.page_list.setUniformItemSizes(False)
+        self.page_list.setWordWrap(False)
         self.page_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.page_list.setMovement(QListWidget.Movement.Snap)
         self.page_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.page_list.setDragEnabled(True)
+        self.page_list.setAcceptDrops(True)
+        self.page_list.setDropIndicatorShown(True)
+        self.page_list.setDragDropOverwriteMode(False)
         self.page_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.page_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.page_list.setSpacing(8)
+        self.page_list.setSpacing(12)
         self.page_list.currentItemChanged.connect(self.on_page_changed)
+        self.page_list.native_drop_finished.connect(self.refresh_thumbnail_layout)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -456,6 +473,7 @@ class MainWindow(QMainWindow):
         current = self.page_list.item(insert_at)
         if current:
             current.setSelected(True)
+        self.refresh_thumbnail_layout()
         self.statusBar().showMessage(f"{len(models)} página(s) añadida(s)", 4000)
 
     def add_pdfs(self) -> None:
@@ -600,6 +618,7 @@ class MainWindow(QMainWindow):
             self.page_list.setCurrentRow(min(rows[-1] if rows else 0, self.page_list.count() - 1))
         else:
             self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
+        self.refresh_thumbnail_layout()
 
     def rotate_selected_pages(self, delta: int) -> None:
         selected = self.page_list.selectedItems()
@@ -625,6 +644,7 @@ class MainWindow(QMainWindow):
             self.load_page_into_preview(self.current_page_id)
 
         direction = "izquierda" if delta < 0 else "derecha"
+        self.refresh_thumbnail_layout()
         self.statusBar().showMessage(f"{len(selected_ids)} página(s) rotada(s) a la {direction}", 4000)
 
     def on_page_changed(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem]) -> None:
@@ -796,7 +816,7 @@ class MainWindow(QMainWindow):
         painter.end()
         self.thumbnail_cache[page.id] = thumb
         item.setIcon(QIcon(thumb))
-        item.setSizeHint(QSize(max(thumb.width() + 18, 96), thumb.height() + 42))
+        item.setSizeHint(QSize(246, thumb.height() + 42))
 
     def _refresh_current_thumbnail(self) -> None:
         if not self.current_page_id:
@@ -806,6 +826,22 @@ class MainWindow(QMainWindow):
             if item.data(Qt.ItemDataRole.UserRole) == self.current_page_id:
                 self._set_thumbnail(item, self.pages[self.current_page_id])
                 break
+        self.refresh_thumbnail_layout()
+
+    def refresh_thumbnail_layout(self) -> None:
+        QTimer.singleShot(0, self._refresh_thumbnail_layout_now)
+
+    def _refresh_thumbnail_layout_now(self) -> None:
+        for i in range(self.page_list.count()):
+            item = self.page_list.item(i)
+            page_id = item.data(Qt.ItemDataRole.UserRole)
+            page = self.pages.get(page_id)
+            if page:
+                self._set_thumbnail(item, page)
+        self.page_list.scheduleDelayedItemsLayout()
+        self.page_list.doItemsLayout()
+        self.page_list.updateGeometries()
+        self.page_list.viewport().update()
 
     @staticmethod
     def _rotate_overlay(overlay: OverlayModel, delta: int) -> None:
