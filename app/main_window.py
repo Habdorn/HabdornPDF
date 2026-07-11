@@ -80,6 +80,13 @@ class MainWindow(QMainWindow):
         self._changing_selection = False
         self.undo_stack = QUndoStack(self)
         self.undo_stack.setUndoLimit(20)
+        self._direct_revision = 0
+        self._saved_direct_revision = 0
+        self._saved_undo_index = self.undo_stack.index()
+        self.is_dirty = False
+        self.undo_stack.indexChanged.connect(self._update_dirty_state)
+        self.undo_stack.cleanChanged.connect(self._update_dirty_state)
+        self.undo_stack.setClean()
 
         self.scene = QGraphicsScene(self)
         self.preview = PreviewView(self.scene)
@@ -135,6 +142,37 @@ class MainWindow(QMainWindow):
         self._build_undo_shortcuts()
         self._apply_style()
         self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
+        self.update_window_title()
+
+    def set_dirty(self, dirty: bool = True) -> None:
+        if self.is_dirty == dirty:
+            return
+        self.is_dirty = dirty
+        self.update_window_title()
+
+    def update_window_title(self) -> None:
+        suffix = " *" if self.is_dirty else ""
+        self.setWindowTitle(f"{APP_NAME}{suffix}")
+
+    def _update_dirty_state(self, *args) -> None:
+        undo_state_matches = (
+            self.undo_stack.isClean()
+            and self.undo_stack.index() == self._saved_undo_index
+        )
+        direct_state_matches = (
+            self._direct_revision == self._saved_direct_revision
+        )
+        self.set_dirty(not (undo_state_matches and direct_state_matches))
+
+    def _mark_direct_change(self) -> None:
+        self._direct_revision += 1
+        self._update_dirty_state()
+
+    def _mark_exported_state(self) -> None:
+        self._saved_undo_index = self.undo_stack.index()
+        self._saved_direct_revision = self._direct_revision
+        self.undo_stack.setClean()
+        self._update_dirty_state()
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Herramientas")
@@ -398,6 +436,7 @@ class MainWindow(QMainWindow):
                 insert_at = current_row + 1 if current_row >= 0 else self.page_list.count()
                 self._insert_page_models_direct(models, insert_at)
                 self.undo_stack.clear()
+                self._mark_direct_change()
                 return
             self._insert_page_models(models, "Agregar PDF")
 
@@ -435,6 +474,7 @@ class MainWindow(QMainWindow):
         if was_empty:
             self._insert_page_models_direct(models, self.page_list.count())
             self.undo_stack.clear()
+            self._mark_direct_change()
             return
         self._insert_page_models(models, "Agregar imagen como página")
 
@@ -808,6 +848,7 @@ class MainWindow(QMainWindow):
             progress.close()
             if not completed:
                 return
+            self._mark_exported_state()
             self.statusBar().showMessage(f"PDF exportado: {path}", 7000)
             QMessageBox.information(
                 self,
@@ -822,6 +863,29 @@ class MainWindow(QMainWindow):
                 f"No se pudo exportar el PDF.\n\n{exc}",
             )
 
+    def _confirm_discard_changes(self) -> bool:
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Cambios sin exportar")
+        message_box.setText(
+            "El documento contiene cambios que todavía no han sido "
+            "exportados.\n\n"
+            "¿Deseas cerrar la aplicación y perder esos cambios?"
+        )
+        close_button = message_box.addButton(
+            "Cerrar sin exportar",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        cancel_button = message_box.addButton(
+            "Cancelar",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        message_box.setDefaultButton(cancel_button)
+        message_box.exec()
+        return message_box.clickedButton() is close_button
+
     def closeEvent(self, event) -> None:
+        if self.is_dirty and not self._confirm_discard_changes():
+            event.ignore()
+            return
         self.save_current_overlay_positions()
         event.accept()

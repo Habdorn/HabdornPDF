@@ -291,6 +291,9 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Eliminar overlay | ✅ | Toolbar o teclas Supr/Retroceso; restaurable con Undo. |
 | Zoom de preview | ✅ | `Ctrl + rueda`; al cambiar de página vuelve a encajar la vista. |
 | Undo/Redo | ✅ | Inserción/eliminación/orden/rotación de páginas e inserción/eliminación/geometría de overlays; límite 20. |
+| Detección de cambios pendientes | ✅ | Compara el punto limpio de `QUndoStack` y la revisión de cambios directos; Undo/Redo puede volver exactamente al estado exportado. |
+| Advertencia de cierre | ✅ | Muestra una confirmación segura con “Cancelar” predeterminado cuando existen cambios sin exportar. |
+| Indicador en el título | ✅ | Añade `*` a “Habdorn PDF” mientras el documento difiere del último estado exportado. |
 | Estado base inicial protegido | ✅ | La primera carga de PDF o lote de imágenes en documento vacío se inserta directamente y limpia el historial, por lo que no se deshace accidentalmente el documento base. |
 | Exportar PDF | ✅ | Recompone en orden, incorpora páginas PDF, imágenes, blancos, rotaciones y overlays. |
 | Conservación de calidad PDF | ✅ | Usa `show_pdf_page` en vez de rasterizar las páginas PDF para la salida. |
@@ -314,8 +317,7 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 1. **Crear pruebas automáticas del modelo, geometría, comandos y exportación.** Deben cubrir las tres clases de página, los cuatro giros, overlays rotados, Undo/Redo y orden.
 2. **Mantener la matriz manual de regresión en cambios futuros.** La modularización fue validada manualmente en Windows con los flujos principales; debe repetirse cuando cambien render, geometría, Undo/Redo o exportación.
 3. **Validar archivos fuente antes y durante exportación.** Si un PDF o imagen fue movido, eliminado o modificado durante la sesión, el usuario necesita un diagnóstico preciso por página.
-4. **Evitar pérdida silenciosa de trabajo al cerrar.** Como mínimo, detectar estado editable y confirmar salida; idealmente ofrecer proyecto o recuperación.
-5. **Diagnosticar render en vez de ocultar cualquier excepción.** El placeholder blanco actual evita un crash, pero elimina evidencia del fallo.
+4. **Diagnosticar render en vez de ocultar cualquier excepción.** El placeholder blanco actual evita un crash, pero elimina evidencia del fallo.
 
 ### Prioridad P1 — rendimiento y experiencia básica
 
@@ -361,25 +363,19 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 - **Causa:** `add_pdfs()` verifica `doc.needs_pass`, muestra una advertencia y descarta el documento.
 - **Solución posible:** solicitar contraseña con un diálogo, llamar a `doc.authenticate()`, limitar intentos y mantener la contraseña solo en memoria.
 
-#### 2. Cerrar la aplicación descarta el proyecto sin confirmación
-
-- **Gravedad:** alta por pérdida de trabajo no exportado.
-- **Causa:** `closeEvent()` solo sincroniza overlays y acepta el evento; no existe dirty flag, guardado de proyecto ni diálogo.
-- **Solución posible:** registrar mutaciones, marcar estado sucio y confirmar al cerrar. Una solución completa requiere formato de proyecto o recuperación temporal.
-
-#### 3. Una fuente movida/eliminada rompe la preview o exportación
+#### 2. Una fuente movida/eliminada rompe la preview o exportación
 
 - **Gravedad:** alta.
 - **Causa:** los modelos guardan rutas absolutas, no bytes ni copias temporales. PDF e imágenes se reabren cuando se renderizan/exportan.
 - **Solución posible:** validación previa con lista de fuentes faltantes, opción de relocalizar; para proyectos persistentes, empaquetar assets o guardar hashes/referencias administradas.
 
-#### 4. Los fallos de renderizado de preview se convierten silenciosamente en una página blanca
+#### 3. Los fallos de renderizado de preview se convierten silenciosamente en una página blanca
 
 - **Gravedad:** media.
 - **Causa:** `render_page_pixmap()` captura `Exception` sin registrar el error y devuelve un placeholder blanco.
 - **Solución posible:** registrar contexto, mostrar una miniatura de error y conservar el detalle para el usuario/desarrollador.
 
-#### 5. No existe confirmación antes de sobrescribir mediante lógica propia
+#### 4. No existe confirmación antes de sobrescribir mediante lógica propia
 
 - **Gravedad:** baja/media.
 - **Causa:** se delega la selección al diálogo de guardado y luego se llama a `output.save(path)`; el comportamiento de confirmación depende del diálogo/plataforma.
@@ -387,31 +383,31 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 
 ### Riesgos probables que necesitan reproducción antes de declararlos bugs
 
-#### 6. Lentitud o congelamiento con muchas páginas
+#### 5. Lentitud o congelamiento con muchas páginas
 
 - **Gravedad potencial:** alta para documentos grandes.
 - **Causa probable:** render síncrono en el hilo UI; `_refresh_thumbnail_layout_now()` vuelve a renderizar todas las miniaturas, y varios cambios disparan refrescos adicionales.
 - **Solución posible:** invalidación por página, tareas en background con resultados entregados al hilo GUI, debounce y cache por firma de estado.
 
-#### 7. Crecimiento de memoria por miniaturas y estados Undo
+#### 6. Crecimiento de memoria por miniaturas y estados Undo
 
 - **Gravedad potencial:** media.
 - **Causa probable:** cada miniatura es un `QPixmap`; comandos guardan copias profundas de páginas y overlays. El límite de 20 contiene el historial, pero páginas grandes/muchos overlays pueden pesar.
 - **Solución posible:** medir, limitar cache, almacenar estados mínimos y liberar pixmaps no visibles.
 
-#### 8. Diferencias entre preview y exportación para rotaciones arbitrarias
+#### 7. Diferencias entre preview y exportación para rotaciones arbitrarias
 
 - **Gravedad potencial:** media.
 - **Causa probable:** preview y exportación siguen rutas de render distintas. La exportación rota a un bitmap con bounding box y lo estira al rectángulo calculado; deben probarse transparencia, TIFF multipágina, EXIF y bordes.
 - **Solución posible:** pruebas golden de imagen/PDF y una función geométrica compartida.
 
-#### 9. TIFF animado/multipágina y orientación EXIF no están definidos
+#### 8. TIFF animado/multipágina y orientación EXIF no están definidos
 
 - **Gravedad potencial:** baja/media.
 - **Causa probable:** se toma el tamaño/frame predeterminado de Pillow o Qt sin política explícita de frames/orientación.
 - **Solución posible:** normalizar EXIF, definir si se admite cada frame y validar formatos por una sola ruta.
 
-#### 10. La cancelación puede dejar un archivo previo intacto o un resultado parcial según el punto de fallo
+#### 9. La cancelación puede dejar un archivo previo intacto o un resultado parcial según el punto de fallo
 
 - **Gravedad potencial:** media.
 - **Causa probable:** la salida se construye en memoria y se guarda al final, lo cual es positivo, pero no se usa ruta temporal + reemplazo atómico ni se documenta la semántica al sobrescribir.
@@ -693,15 +689,13 @@ Después, prueba manualmente el flujo afectado. Para cambios de render/exportaci
 1. **Congelar un baseline verificable:** crear corpus pequeño de PDF/imágenes y checklist de regresión.
 2. **Añadir pruebas de funciones puras y Undo/Redo** sin cambiar arquitectura general.
 3. **Añadir pruebas de exportación** que inspeccionen número, dimensiones, rotación y presencia de imágenes.
-4. **Implementar dirty flag y confirmación de cierre** para evitar pérdida de trabajo.
-5. **Mejorar diagnóstico de fuentes faltantes y errores de render.**
-6. **Perfilar documentos de 50, 200 y 500 páginas**, medir tiempo y memoria.
-7. **Corregir invalidación de miniaturas** para renderizar solo lo modificado.
-8. **Mover render pesado fuera del hilo UI**, con cuidado de no usar objetos GUI desde workers.
-9. **Definir el alcance de persistencia de proyecto** con el propietario: referencias vs assets embebidos.
-10. **Solo con autorización, extraer módulos incrementalmente**, empezando por geometría pura y comandos.
-11. **Preparar un build reproducible y smoke test del `.exe`.**
-12. **Decidir roadmap funcional**: contraseñas, texto, recorte, firma, numeración, instalador.
+4. **Mejorar diagnóstico de fuentes faltantes y errores de render.**
+5. **Perfilar documentos de 50, 200 y 500 páginas**, medir tiempo y memoria.
+6. **Corregir invalidación de miniaturas** para renderizar solo lo modificado.
+7. **Mover render pesado fuera del hilo UI**, con cuidado de no usar objetos GUI desde workers.
+8. **Definir el alcance de persistencia de proyecto** con el propietario: referencias vs assets embebidos.
+9. **Preparar un build reproducible y smoke test del `.exe`.**
+10. **Decidir roadmap funcional**: contraseñas, texto, recorte, firma, numeración, instalador.
 
 ## 14. Archivos más importantes
 
@@ -826,6 +820,7 @@ Basado en el historial Git disponible:
 ### 11 de julio de 2026 — cambio local validado, pendiente de commit
 
 - Modularización incremental autorizada y validada manualmente en Windows: punto de entrada, modelos, widgets, comandos y servicios separados sin nuevas dependencias ni cambios visibles intencionales.
+- En `feature/dirty-state`, funcionalidad validada manualmente en Windows: detección centralizada de cambios pendientes, título con asterisco, punto limpio ligado a exportación exitosa y confirmación segura al cerrar.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
@@ -870,7 +865,7 @@ El código evidencia cuidado en problemas difíciles: geometría, límites, rota
 ### Riesgos futuros
 
 1. **Regresiones geométricas** por mantener implementaciones paralelas para preview/exportación.
-2. **Pérdida de trabajo** hasta tener dirty flag/persistencia.
+2. **Pérdida de trabajo ante fallos del proceso** mientras no exista persistencia, autosave o recuperación; el cierre normal ya advierte cambios pendientes.
 3. **Rendimiento UI** con crecimiento de páginas y miniaturas.
 4. **Fuentes desaparecidas** debido al modelo referencial.
 5. **Cambios de dependencias** dentro de rangos sin build reproducible.
