@@ -1,12 +1,18 @@
 import math
-from typing import Callable, Dict, Iterable
+from typing import Callable, Dict, Iterable, Optional
 
 import fitz
 from PIL import Image
 
 from models.page_model import PageModel
 from services.image_utils import rotated_image_stream
-from services.pdf_renderer import fit_rect, rotate_rect, rotated_page_size
+from services.pdf_renderer import (
+    AssetPathResolver,
+    fit_rect,
+    resolve_model_path,
+    rotate_rect,
+    rotated_page_size,
+)
 
 ProgressCallback = Callable[[int], None]
 CancelCallback = Callable[[], bool]
@@ -37,6 +43,7 @@ def export_pdf_document(
     path: str,
     progress_callback: ProgressCallback,
     is_cancelled: CancelCallback,
+    resolve_asset_path: Optional[AssetPathResolver] = None,
 ) -> bool:
     output = fitz.open()
     source_docs: Dict[str, fitz.Document] = {}
@@ -46,6 +53,11 @@ def export_pdf_document(
                 return False
 
             model = pages[page_id]
+            model_source = resolve_model_path(
+                model.asset_id,
+                model.source,
+                resolve_asset_path,
+            )
             rotation = model.rotation % 360
             fitz_rotation = (-rotation) % 360
             page_w, page_h = rotated_page_size(
@@ -57,20 +69,20 @@ def export_pdf_document(
 
             if (
                 model.kind == "pdf"
-                and model.source is not None
+                and model_source is not None
                 and model.page_index is not None
             ):
-                if model.source not in source_docs:
-                    source_docs[model.source] = fitz.open(model.source)
+                if model_source not in source_docs:
+                    source_docs[model_source] = fitz.open(model_source)
                 page.show_pdf_page(
                     page.rect,
-                    source_docs[model.source],
+                    source_docs[model_source],
                     model.page_index,
                     rotate=fitz_rotation,
                 )
-            elif model.kind == "image" and model.source:
+            elif model.kind == "image" and model_source:
                 try:
-                    with Image.open(model.source) as image:
+                    with Image.open(model_source) as image:
                         image_w, image_h = image.size
                     rect = fit_rect(
                         model.width_pt,
@@ -86,16 +98,25 @@ def export_pdf_document(
                     )
                     page.insert_image(
                         rect,
-                        filename=model.source,
+                        filename=model_source,
                         keep_proportion=True,
                         rotate=fitz_rotation,
                     )
                 except Exception as exc:
                     raise RuntimeError(
-                        f"No se pudo insertar {model.source}: {exc}"
+                        f"No se pudo insertar {model_source}: {exc}"
                     ) from exc
 
             for overlay in model.overlays:
+                overlay_path = resolve_model_path(
+                    overlay.asset_id,
+                    overlay.path,
+                    resolve_asset_path,
+                )
+                if not overlay_path:
+                    raise RuntimeError(
+                        "No se encontró la imagen interna del overlay."
+                    )
                 rect = fitz.Rect(
                     overlay.x * page_w,
                     overlay.y * page_h,
@@ -106,7 +127,7 @@ def export_pdf_document(
                 if overlay_rotation:
                     bounds = rotated_rect_bounds(rect, overlay_rotation)
                     stream = rotated_image_stream(
-                        overlay.path,
+                        overlay_path,
                         overlay_rotation,
                     )
                     page.insert_image(
@@ -118,7 +139,7 @@ def export_pdf_document(
                 else:
                     page.insert_image(
                         rect,
-                        filename=overlay.path,
+                        filename=overlay_path,
                         keep_proportion=False,
                         overlay=True,
                     )

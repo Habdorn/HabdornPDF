@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -10,3 +11,4 @@ class OverlayModel:
     w: float
     h: float
     rotation: float = 0.0
+    asset_id: Optional[str] = None

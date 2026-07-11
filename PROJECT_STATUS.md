@@ -120,7 +120,7 @@ La aplicación es un **programa de escritorio dirigido por eventos con separaci�
 
 ### Organización de carpetas
 
-El código se organiza en `app/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, assets, archivos `.ui` ni configuración de CI.
+El código se organiza en `app/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, recursos estáticos, archivos `.ui` ni configuración de CI. Los assets importados se crean fuera del repositorio, dentro de workspaces administrados.
 
 ### Responsabilidades por componente
 
@@ -129,7 +129,8 @@ El código se organiza en `app/`, `models/`, `commands/`, `widgets/` y `services
 Dataclass que representa una imagen colocada sobre una página:
 
 - `id`: identificador UUID hexadecimal estable;
-- `path`: ruta absoluta al archivo fuente;
+- `path`: ruta absoluta interna por compatibilidad temporal;
+- `asset_id`: identidad canónica del asset administrado;
 - `x`, `y`, `w`, `h`: geometría normalizada respecto de la página ya orientada, normalmente entre 0 y 1;
 - `rotation`: rotación visual en grados.
 
@@ -141,7 +142,8 @@ Dataclass que representa una página lógica del documento en construcción:
 
 - `id`: identificador estable;
 - `kind`: `pdf`, `image` o `blank`;
-- `source`: ruta absoluta del PDF o imagen fuente;
+- `source`: ruta absoluta interna por compatibilidad temporal;
+- `asset_id`: identidad canónica del PDF o imagen administrada; es `None` en páginas blancas;
 - `page_index`: índice cero de la página dentro de un PDF fuente;
 - `width_pt`/`height_pt`: dimensiones base en puntos PDF;
 - `rotation`: múltiplo acumulado de 90°;
@@ -228,6 +230,7 @@ HabdornPDF/
 │   └── main_window.py          # UI, estado y coordinación del flujo de usuario.
 ├── models/
 │   ├── __init__.py
+│   ├── asset_record.py         # Metadatos inmutables de cada recurso interno.
 │   ├── overlay_model.py        # Estado normalizado de imágenes superpuestas.
 │   └── page_model.py           # Estado lógico de páginas.
 ├── commands/
@@ -241,6 +244,7 @@ HabdornPDF/
 │   └── preview_view.py
 ├── services/
 │   ├── __init__.py
+│   ├── asset_manager.py        # Workspace, copia atómica, hash y deduplicación.
 │   ├── image_utils.py          # Rotación/conversión de imagen en memoria.
 │   ├── pdf_exporter.py         # Construcción técnica del PDF final.
 │   └── pdf_renderer.py         # Render y transformaciones geométricas.
@@ -274,7 +278,7 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Funcionalidad | Estado | Qué hace y alcance real |
 |---|:---:|---|
 | Inicio de aplicación | ✅ | Crea ventana principal, layout dividido, toolbar, menús, estado y tema oscuro. |
-| Abrir uno o varios PDF | ✅ | Selector múltiple; crea un `PageModel` por página y conserva ruta e índice fuente. |
+| Abrir uno o varios PDF | ✅ | Selector múltiple; copia cada PDF una vez y crea páginas que comparten `asset_id` e índice. |
 | Unir varios PDF | ✅ | Las páginas importadas comparten una lista ordenable y se materializan juntas al exportar. |
 | Detectar PDF protegido | 🟡 | Detecta `needs_pass`, advierte y omite el archivo; no solicita contraseña. |
 | Imágenes como páginas | ✅ | Admite PNG, JPEG, WebP, BMP y TIFF; crea A4 vertical u horizontal según orientación. |
@@ -283,7 +287,7 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Reordenar páginas | ✅ | Drag-and-drop nativo, validación de orden e integración con Undo/Redo. |
 | Eliminar páginas | ✅ | Elimina una o varias seleccionadas y permite restaurarlas con su contenido lógico. |
 | Rotar páginas | ✅ | Giro múltiple de 90° izquierda/derecha; ajusta overlays y exportación. |
-| Insertar imagen sobre página | ✅ | Centra una imagen con tamaño inicial proporcional y mantiene la ruta fuente. |
+| Insertar imagen sobre página | ✅ | Copia/deduplica la imagen, la centra proporcionalmente y conserva su `asset_id`. |
 | Seleccionar varios overlays | ✅ | `QGraphicsScene` y rubber-band permiten selección; la eliminación acepta múltiples items. |
 | Mover overlay | ✅ | Arrastre limitado a la página y comando Undo/Redo al soltar. |
 | Redimensionar overlay | ✅ | Cuatro esquinas, proporción conservada, tamaño mínimo y límites de página. |
@@ -304,6 +308,10 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Ejecución automatizada en Windows | ✅ | El batch crea `.venv`, instala requisitos y ejecuta. |
 | Empaquetado `.exe` | ✅ | Batch PyInstaller produce distribución `onedir`. |
 | Operación local/privada | ✅ | No existe código de red ni persistencia documental oculta. |
+| Assets embebidos al importar | ✅ | PDF e imágenes se copian a un workspace administrado y el documento usa la copia interna. |
+| Deduplicación de assets | ✅ | Reutiliza contenido idéntico por tamaño y SHA-256 sin cargar archivos completos en memoria. |
+| Independencia de originales | ✅ | Preview, miniaturas, edición y exportación resuelven `asset_id`; el original puede eliminarse después de importar. |
+| Manifiesto de workspace | ✅ | `workspace.json` registra versión, ID, creación y assets mediante reemplazo atómico. |
 | Edición de texto PDF existente | 🔴 | Explícitamente fuera de la versión actual. |
 | Guardar/abrir proyecto editable | 🔴 | El estado solo vive en memoria; únicamente se exporta el PDF final. |
 | PDF con contraseña | 🔴 | Se detecta, pero no se puede desbloquear. |
@@ -316,7 +324,7 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 
 1. **Crear pruebas automáticas del modelo, geometría, comandos y exportación.** Deben cubrir las tres clases de página, los cuatro giros, overlays rotados, Undo/Redo y orden.
 2. **Mantener la matriz manual de regresión en cambios futuros.** La modularización fue validada manualmente en Windows con los flujos principales; debe repetirse cuando cambien render, geometría, Undo/Redo o exportación.
-3. **Validar archivos fuente antes y durante exportación.** Si un PDF o imagen fue movido, eliminado o modificado durante la sesión, el usuario necesita un diagnóstico preciso por página.
+3. **Diagnosticar assets internos ausentes o dañados antes de exportar.** Los originales ya no son necesarios, pero una copia administrada perdida debe identificarse con precisión.
 4. **Diagnosticar render en vez de ocultar cualquier excepción.** El placeholder blanco actual evita un crash, pero elimina evidencia del fallo.
 
 ### Prioridad P1 — rendimiento y experiencia básica
@@ -334,7 +342,7 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 
 ### Prioridad P2 — formatos, persistencia y distribución
 
-1. Guardar y reabrir un proyecto editable, con referencias a fuentes o assets embebidos.
+1. Guardar y reabrir un proyecto editable `.hpdf` a partir del workspace y sus assets embebidos.
 2. Recuperación automática ante cierre inesperado.
 3. Soporte de PDFs cifrados mediante solicitud de contraseña, sin persistirla.
 4. Elección de tamaño de papel, orientación y márgenes para páginas de imagen/blancas.
@@ -363,19 +371,13 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 - **Causa:** `add_pdfs()` verifica `doc.needs_pass`, muestra una advertencia y descarta el documento.
 - **Solución posible:** solicitar contraseña con un diálogo, llamar a `doc.authenticate()`, limitar intentos y mantener la contraseña solo en memoria.
 
-#### 2. Una fuente movida/eliminada rompe la preview o exportación
-
-- **Gravedad:** alta.
-- **Causa:** los modelos guardan rutas absolutas, no bytes ni copias temporales. PDF e imágenes se reabren cuando se renderizan/exportan.
-- **Solución posible:** validación previa con lista de fuentes faltantes, opción de relocalizar; para proyectos persistentes, empaquetar assets o guardar hashes/referencias administradas.
-
-#### 3. Los fallos de renderizado de preview se convierten silenciosamente en una página blanca
+#### 2. Los fallos de renderizado de preview se convierten silenciosamente en una página blanca
 
 - **Gravedad:** media.
 - **Causa:** `render_page_pixmap()` captura `Exception` sin registrar el error y devuelve un placeholder blanco.
 - **Solución posible:** registrar contexto, mostrar una miniatura de error y conservar el detalle para el usuario/desarrollador.
 
-#### 4. No existe confirmación antes de sobrescribir mediante lógica propia
+#### 3. No existe confirmación antes de sobrescribir mediante lógica propia
 
 - **Gravedad:** baja/media.
 - **Causa:** se delega la selección al diálogo de guardado y luego se llama a `output.save(path)`; el comportamiento de confirmación depende del diálogo/plataforma.
@@ -383,31 +385,31 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 
 ### Riesgos probables que necesitan reproducción antes de declararlos bugs
 
-#### 5. Lentitud o congelamiento con muchas páginas
+#### 4. Lentitud o congelamiento con muchas páginas
 
 - **Gravedad potencial:** alta para documentos grandes.
 - **Causa probable:** render síncrono en el hilo UI; `_refresh_thumbnail_layout_now()` vuelve a renderizar todas las miniaturas, y varios cambios disparan refrescos adicionales.
 - **Solución posible:** invalidación por página, tareas en background con resultados entregados al hilo GUI, debounce y cache por firma de estado.
 
-#### 6. Crecimiento de memoria por miniaturas y estados Undo
+#### 5. Crecimiento de memoria por miniaturas y estados Undo
 
 - **Gravedad potencial:** media.
 - **Causa probable:** cada miniatura es un `QPixmap`; comandos guardan copias profundas de páginas y overlays. El límite de 20 contiene el historial, pero páginas grandes/muchos overlays pueden pesar.
 - **Solución posible:** medir, limitar cache, almacenar estados mínimos y liberar pixmaps no visibles.
 
-#### 7. Diferencias entre preview y exportación para rotaciones arbitrarias
+#### 6. Diferencias entre preview y exportación para rotaciones arbitrarias
 
 - **Gravedad potencial:** media.
 - **Causa probable:** preview y exportación siguen rutas de render distintas. La exportación rota a un bitmap con bounding box y lo estira al rectángulo calculado; deben probarse transparencia, TIFF multipágina, EXIF y bordes.
 - **Solución posible:** pruebas golden de imagen/PDF y una función geométrica compartida.
 
-#### 8. TIFF animado/multipágina y orientación EXIF no están definidos
+#### 7. TIFF animado/multipágina y orientación EXIF no están definidos
 
 - **Gravedad potencial:** baja/media.
 - **Causa probable:** se toma el tamaño/frame predeterminado de Pillow o Qt sin política explícita de frames/orientación.
 - **Solución posible:** normalizar EXIF, definir si se admite cada frame y validar formatos por una sola ruta.
 
-#### 9. La cancelación puede dejar un archivo previo intacto o un resultado parcial según el punto de fallo
+#### 8. La cancelación puede dejar un archivo previo intacto o un resultado parcial según el punto de fallo
 
 - **Gravedad potencial:** media.
 - **Causa probable:** la salida se construye en memoria y se guarda al final, lo cual es positivo, pero no se usa ruta temporal + reemplazo atómico ni se documenta la semántica al sobrescribir.
@@ -466,9 +468,11 @@ Los archivos deben conservar UTF-8 y el texto visible en español. Cualquier moj
 
 Se eligió una sola unidad de código. Esto reduce fricción para una primera aplicación y su empaquetado, pero ahora limita pruebas y evolución. Las reglas dejan claro que la base actual es canónica: no debe reescribirse ni reorganizarse sin permiso.
 
-### Edición no destructiva y referencial
+### Edición no destructiva con assets administrados
 
-El programa no modifica fuentes. Cada página conserva ruta, índice, tamaño, rotación y overlays. La exportación crea un documento nuevo. Esta decisión protege originales y permite conservar calidad PDF, pero hace que la sesión dependa de que las rutas sigan disponibles.
+El programa no modifica fuentes. Al importar, `AssetManager` crea una copia interna identificada por `asset_id`; `source/path` se conserva temporalmente apuntando a esa copia para compatibilidad. Renderer y exportador consideran `asset_id` canónico y solo usan rutas directas como fallback para modelos antiguos. La exportación crea un documento nuevo y ya no depende del original.
+
+Cada ventana crea un workspace persistente en `%LOCALAPPDATA%\HabdornPDF\workspaces\<workspace_id>`. Si `LOCALAPPDATA` no está disponible o no puede usarse, se recurre al directorio temporal seguro del sistema. El workspace no se elimina al cerrar y todavía no se abre o recupera automáticamente.
 
 ### IDs estables independientes del orden
 
@@ -531,20 +535,22 @@ PyInstaller produce una carpeta, no un único ejecutable. Suele mejorar compatib
 ### 2. Importación de PDF
 
 1. El usuario elige uno o varios PDF.
-2. Cada archivo se abre con `fitz.open`.
+2. Cada archivo se valida con `fitz.open`.
 3. Si requiere contraseña, se advierte y omite.
-4. Por cada página se lee `rect`, se genera UUID y se crea `PageModel(kind="pdf")` con ruta absoluta e índice.
-5. Si el documento estaba vacío, los modelos se insertan directamente y se limpia Undo.
-6. Si ya había contenido, se crea `InsertPagesCommand` en la posición posterior a la página activa.
-7. Se generan miniaturas y se selecciona la primera página insertada.
+4. `AssetManager` calcula tamaño/SHA-256, deduplica y copia atómicamente al workspace.
+5. El PDF interno se abre y cada página recibe el mismo `asset_id`, ruta interna, índice y dimensiones.
+6. Si el documento estaba vacío, los modelos se insertan directamente y se limpia Undo.
+7. Si ya había contenido, se crea `InsertPagesCommand` en la posición posterior a la página activa.
+8. Se generan miniaturas y se selecciona la primera página insertada.
 
 ### 3. Importación de imágenes como páginas
 
 1. El usuario elige imágenes.
-2. Pillow lee sus dimensiones.
-3. Se decide A4 horizontal si ancho ≥ alto; vertical en otro caso.
-4. Se crea un `PageModel(kind="image")` por archivo.
-5. La inserción sigue la misma política de base inicial/Undo.
+2. Pillow valida la imagen.
+3. Se importa/deduplica una copia interna y se leen sus dimensiones.
+4. Se decide A4 horizontal si ancho ≥ alto; vertical en otro caso.
+5. Se crea un `PageModel(kind="image")` con `asset_id`.
+6. La inserción sigue la misma política de base inicial/Undo.
 
 ### 4. Selección y preview
 
@@ -583,7 +589,7 @@ PyInstaller produce una carpeta, no un único ejecutable. Suele mejorar compatib
 4. Se crea diálogo de progreso y un documento PyMuPDF vacío.
 5. Se recorren IDs en el orden de `page_list`.
 6. Se calcula orientación y tamaño final.
-7. Para página PDF, se reutiliza el documento fuente abierto y se coloca la página original con `show_pdf_page`.
+7. Para página PDF, se reutiliza el documento interno abierto y se coloca la página con `show_pdf_page`.
 8. Para página de imagen, se calcula un rectángulo con margen y se inserta la imagen.
 9. Para blanco, basta la página nueva vacía.
 10. Cada overlay se transforma de coordenadas normalizadas a puntos.
@@ -689,7 +695,7 @@ Después, prueba manualmente el flujo afectado. Para cambios de render/exportaci
 1. **Congelar un baseline verificable:** crear corpus pequeño de PDF/imágenes y checklist de regresión.
 2. **Añadir pruebas de funciones puras y Undo/Redo** sin cambiar arquitectura general.
 3. **Añadir pruebas de exportación** que inspeccionen número, dimensiones, rotación y presencia de imágenes.
-4. **Mejorar diagnóstico de fuentes faltantes y errores de render.**
+4. **Mejorar diagnóstico agregado de assets internos faltantes y errores de render.**
 5. **Perfilar documentos de 50, 200 y 500 páginas**, medir tiempo y memoria.
 6. **Corregir invalidación de miniaturas** para renderizar solo lo modificado.
 7. **Mover render pesado fuera del hilo UI**, con cuidado de no usar objetos GUI desde workers.
@@ -710,6 +716,10 @@ Orquestador canónico de la UI y del estado de sesión. Coordina modelos, widget
 ### `services/pdf_renderer.py` y `services/pdf_exporter.py`
 
 Implementan respectivamente render/transformaciones y construcción del PDF final. Deben mantenerse coherentes al modificar geometría.
+
+### `services/asset_manager.py`
+
+Crea y mantiene el workspace, importa recursos mediante temporal + `os.replace`, calcula SHA-256 por bloques, deduplica y resuelve `asset_id` a rutas internas validadas. `workspace.json` es un manifiesto mínimo de assets, no un proyecto reabrible.
 
 ### `requirements.txt`
 
@@ -821,6 +831,7 @@ Basado en el historial Git disponible:
 
 - Modularización incremental autorizada y validada manualmente en Windows: punto de entrada, modelos, widgets, comandos y servicios separados sin nuevas dependencias ni cambios visibles intencionales.
 - En `feature/dirty-state`, funcionalidad validada manualmente en Windows: detección centralizada de cambios pendientes, título con asterisco, punto limpio ligado a exportación exitosa y confirmación segura al cerrar.
+- En `feature/embedded-assets`, primera etapa validada manualmente en Windows: workspace persistente, manifiesto atómico, copias internas deduplicadas e independencia de los originales; todavía sin formato `.hpdf` ni reapertura.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 

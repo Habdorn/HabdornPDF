@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 import uuid
 from copy import deepcopy
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
@@ -22,6 +20,7 @@ from commands.page_commands import (
 )
 from models.overlay_model import OverlayModel
 from models.page_model import PageModel
+from services.asset_manager import AssetManager, AssetManagerError
 from services.image_utils import rotated_image_stream
 from services.pdf_exporter import export_pdf_document
 from services.pdf_renderer import (
@@ -67,13 +66,14 @@ from PySide6.QtWidgets import (
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, asset_manager: Optional[AssetManager] = None):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(1420, 860)
         self.setMinimumSize(980, 650)
 
         self.pages: Dict[str, PageModel] = {}
+        self.asset_manager = asset_manager or AssetManager()
         self.current_page_id: Optional[str] = None
         self.overlay_items: Dict[str, OverlayGraphicsItem] = {}
         self.thumbnail_cache: Dict[str, QPixmap] = {}
@@ -409,25 +409,35 @@ class MainWindow(QMainWindow):
         models: List[PageModel] = []
         for path in paths:
             try:
-                doc = fitz.open(path)
-                if doc.needs_pass:
-                    QMessageBox.warning(self, APP_NAME, f"El PDF está protegido con contraseña:\n{path}")
-                    doc.close()
-                    continue
-                for index in range(doc.page_count):
-                    page = doc.load_page(index)
-                    models.append(
-                        PageModel(
-                            id=uuid.uuid4().hex,
-                            kind="pdf",
-                            source=os.path.abspath(path),
-                            page_index=index,
-                            width_pt=page.rect.width,
-                            height_pt=page.rect.height,
-                            label=f"{Path(path).name}\nPág. {index + 1}",
+                with fitz.open(path) as source_doc:
+                    if source_doc.needs_pass:
+                        QMessageBox.warning(
+                            self,
+                            APP_NAME,
+                            f"El PDF está protegido con contraseña:\n{path}",
                         )
-                    )
-                doc.close()
+                        continue
+
+                asset = self.asset_manager.import_asset(path, "pdf")
+                internal_path = self.asset_manager.resolve_path(asset.id)
+                with fitz.open(internal_path) as doc:
+                    for index in range(doc.page_count):
+                        page = doc.load_page(index)
+                        models.append(
+                            PageModel(
+                                id=uuid.uuid4().hex,
+                                kind="pdf",
+                                source=internal_path,
+                                page_index=index,
+                                width_pt=page.rect.width,
+                                height_pt=page.rect.height,
+                                label=(
+                                    f"{asset.original_name}\n"
+                                    f"Pág. {index + 1}"
+                                ),
+                                asset_id=asset.id,
+                            )
+                        )
             except Exception as exc:
                 QMessageBox.critical(self, APP_NAME, f"No se pudo abrir:\n{path}\n\n{exc}")
         if models:
@@ -452,6 +462,10 @@ class MainWindow(QMainWindow):
         for path in paths:
             try:
                 with Image.open(path) as img:
+                    img.verify()
+                asset = self.asset_manager.import_asset(path, "image")
+                internal_path = self.asset_manager.resolve_path(asset.id)
+                with Image.open(internal_path) as img:
                     width, height = img.size
                 if width >= height:
                     page_w, page_h = A4_PORTRAIT[1], A4_PORTRAIT[0]
@@ -461,10 +475,11 @@ class MainWindow(QMainWindow):
                     PageModel(
                         id=uuid.uuid4().hex,
                         kind="image",
-                        source=os.path.abspath(path),
+                        source=internal_path,
                         width_pt=page_w,
                         height_pt=page_h,
-                        label=f"Imagen\n{Path(path).name}",
+                        label=f"Imagen\n{asset.original_name}",
+                        asset_id=asset.id,
                     )
                 )
             except Exception as exc:
@@ -505,6 +520,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, "No se pudo abrir esa imagen.")
             return
 
+        try:
+            asset = self.asset_manager.import_asset(path, "image")
+            internal_path = self.asset_manager.resolve_path(asset.id)
+            pixmap = QPixmap(internal_path)
+            if pixmap.isNull():
+                raise AssetManagerError(
+                    "No se pudo validar la copia interna de la imagen."
+                )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                f"No se pudo crear la copia interna de la imagen.\n\n{exc}",
+            )
+            return
+
         self.save_current_overlay_positions()
         page = self.pages[self.current_page_id]
         ratio = pixmap.width() / max(1, pixmap.height())
@@ -516,11 +547,12 @@ class MainWindow(QMainWindow):
             norm_w = norm_h * ratio * (page_h / page_w)
         overlay = OverlayModel(
             id=uuid.uuid4().hex,
-            path=os.path.abspath(path),
+            path=internal_path,
             x=(1 - norm_w) / 2,
             y=(1 - norm_h) / 2,
             w=norm_w,
             h=norm_h,
+            asset_id=asset.id,
         )
         self.undo_stack.push(InsertOverlayCommand(self, page.id, overlay))
         self.statusBar().showMessage("Imagen insertada: arrástrala y redimensiónala", 4500)
@@ -723,7 +755,16 @@ class MainWindow(QMainWindow):
         page_rect = self.scene.sceneRect()
         rotation = page.rotation % 360
         for overlay in page.overlays:
-            pixmap = QPixmap(overlay.path)
+            try:
+                overlay_path = (
+                    self.asset_manager.resolve_path(overlay.asset_id)
+                    if overlay.asset_id
+                    else overlay.path
+                )
+            except AssetManagerError as exc:
+                self.statusBar().showMessage(str(exc), 7000)
+                continue
+            pixmap = QPixmap(overlay_path)
             if pixmap.isNull():
                 continue
             if rotation:
@@ -743,7 +784,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(page.label.replace("\n", " - "))
 
     def render_page_pixmap(self, page: PageModel, target_long_edge: int = 900, include_overlays: bool = True) -> QPixmap:
-        return render_page_pixmap_service(page, target_long_edge, include_overlays)
+        try:
+            return render_page_pixmap_service(
+                page,
+                target_long_edge,
+                include_overlays,
+                self.asset_manager.resolve_path,
+            )
+        except AssetManagerError as exc:
+            self.statusBar().showMessage(str(exc), 7000)
+            placeholder = QPixmap(480, 640)
+            placeholder.fill(QColor("#ffffff"))
+            return placeholder
 
     def _set_thumbnail(self, item: QListWidgetItem, page: PageModel) -> None:
         pixmap = self.render_page_pixmap(page, target_long_edge=430, include_overlays=True)
@@ -844,6 +896,7 @@ class MainWindow(QMainWindow):
                     QApplication.processEvents(),
                 ),
                 progress.wasCanceled,
+                self.asset_manager.resolve_path,
             )
             progress.close()
             if not completed:

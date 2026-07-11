@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 import fitz
 from PySide6.QtCore import QRectF, Qt
@@ -6,6 +6,24 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QTransform
 
 from models.overlay_model import OverlayModel
 from models.page_model import PageModel
+from services.asset_manager import AssetManagerError
+
+AssetPathResolver = Callable[[str], str]
+
+
+def resolve_model_path(
+    asset_id: Optional[str],
+    legacy_path: Optional[str],
+    resolve_asset_path: Optional[AssetPathResolver],
+) -> Optional[str]:
+    if asset_id is not None:
+        if resolve_asset_path is None:
+            raise RuntimeError(
+                "No se configuró un resolvedor para el asset interno."
+            )
+        return resolve_asset_path(asset_id)
+    # Compatibilidad temporal con modelos creados antes de los assets embebidos.
+    return legacy_path
 
 
 def rotate_overlay(overlay: OverlayModel, delta: int) -> None:
@@ -89,15 +107,21 @@ def render_page_pixmap(
     page: PageModel,
     target_long_edge: int = 900,
     include_overlays: bool = True,
+    resolve_asset_path: Optional[AssetPathResolver] = None,
 ) -> QPixmap:
     try:
         rotation = page.rotation % 360
+        page_source = resolve_model_path(
+            page.asset_id,
+            page.source,
+            resolve_asset_path,
+        )
         if (
             page.kind == "pdf"
-            and page.source is not None
+            and page_source is not None
             and page.page_index is not None
         ):
-            doc = fitz.open(page.source)
+            doc = fitz.open(page_source)
             src_page = doc.load_page(page.page_index)
             page_w, page_h = rotated_page_size(
                 src_page.rect.width,
@@ -129,8 +153,8 @@ def render_page_pixmap(
             height = max(1, int(page_h * scale))
             base = QPixmap(width, height)
             base.fill(Qt.GlobalColor.white)
-            if page.kind == "image" and page.source:
-                img = QPixmap(page.source)
+            if page.kind == "image" and page_source:
+                img = QPixmap(page_source)
                 if not img.isNull():
                     image_rect = fit_rect(
                         page.width_pt,
@@ -174,7 +198,12 @@ def render_page_pixmap(
                 True,
             )
             for overlay in page.overlays:
-                img = QPixmap(overlay.path)
+                overlay_path = resolve_model_path(
+                    overlay.asset_id,
+                    overlay.path,
+                    resolve_asset_path,
+                )
+                img = QPixmap(overlay_path or "")
                 if img.isNull():
                     continue
                 if rotation:
@@ -201,6 +230,8 @@ def render_page_pixmap(
                 painter.restore()
             painter.end()
         return base
+    except AssetManagerError:
+        raise
     except Exception:
         placeholder = QPixmap(480, 640)
         placeholder.fill(QColor("#ffffff"))

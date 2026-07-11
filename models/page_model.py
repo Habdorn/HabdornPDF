@@ -16,3 +16,4 @@ class PageModel:
     rotation: int = 0
     label: str = "Página"
     overlays: List[OverlayModel] = field(default_factory=list)
+    asset_id: Optional[str] = None
