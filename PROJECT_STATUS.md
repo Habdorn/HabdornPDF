@@ -34,7 +34,7 @@ El procesamiento es local. El programa no contiene red, telemetría, subida de d
 
 **Estimación global: 80 % para el alcance de una primera versión estable y distribuible.**
 
-Esta cifra no significa que sea un editor PDF general al 80 %. Respecto del alcance declarado en el repositorio, las funciones esenciales están implementadas: carga, unión, miniaturas, orden, eliminación, páginas en blanco, imágenes como páginas, overlays, rotación, Undo/Redo y exportación. Lo restante se concentra en robustez, pruebas, tratamiento de casos límite, documentación, rendimiento y funciones de producto habituales —guardar proyectos, advertir cambios sin exportar, PDFs cifrados, edición de texto— que actualmente no forman parte del núcleo terminado.
+Esta cifra no significa que sea un editor PDF general al 80 %. Respecto del alcance declarado en el repositorio, las funciones esenciales están implementadas: carga, unión, miniaturas, orden, eliminación, páginas en blanco, imágenes, overlays, rotación, Undo/Redo, proyectos `.hpdf` y exportación. Lo restante se concentra en robustez, pruebas, rendimiento, recuperación automática, PDFs cifrados y edición de texto.
 
 Estado por dimensión:
 
@@ -232,7 +232,8 @@ HabdornPDF/
 │   ├── __init__.py
 │   ├── asset_record.py         # Metadatos inmutables de cada recurso interno.
 │   ├── overlay_model.py        # Estado normalizado de imágenes superpuestas.
-│   └── page_model.py           # Estado lógico de páginas.
+│   ├── page_model.py           # Estado lógico de páginas.
+│   └── project_data.py         # Resultado completo de cargar un proyecto.
 ├── commands/
 │   ├── __init__.py
 │   ├── overlay_commands.py     # Undo/Redo de overlays.
@@ -247,7 +248,8 @@ HabdornPDF/
 │   ├── asset_manager.py        # Workspace, copia atómica, hash y deduplicación.
 │   ├── image_utils.py          # Rotación/conversión de imagen en memoria.
 │   ├── pdf_exporter.py         # Construcción técnica del PDF final.
-│   └── pdf_renderer.py         # Render y transformaciones geométricas.
+│   ├── pdf_renderer.py         # Render y transformaciones geométricas.
+│   └── project_service.py      # Guardado/apertura segura del formato .hpdf.
 ├── AGENTS.md
 ├── main.py                     # Punto de entrada mínimo.
 ├── requirements.txt
@@ -296,7 +298,7 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Zoom de preview | ✅ | `Ctrl + rueda`; al cambiar de página vuelve a encajar la vista. |
 | Undo/Redo | ✅ | Inserción/eliminación/orden/rotación de páginas e inserción/eliminación/geometría de overlays; límite 20. |
 | Detección de cambios pendientes | ✅ | Compara el punto limpio de `QUndoStack` y la revisión de cambios directos; Undo/Redo puede volver exactamente al estado exportado. |
-| Advertencia de cierre | ✅ | Muestra una confirmación segura con “Cancelar” predeterminado cuando existen cambios sin exportar. |
+| Advertencia de cierre | ✅ | Muestra una confirmación segura con “Cancelar” predeterminado cuando existen cambios sin guardar. |
 | Indicador en el título | ✅ | Añade `*` a “Habdorn PDF” mientras el documento difiere del último estado exportado. |
 | Estado base inicial protegido | ✅ | La primera carga de PDF o lote de imágenes en documento vacío se inserta directamente y limpia el historial, por lo que no se deshace accidentalmente el documento base. |
 | Exportar PDF | ✅ | Recompone en orden, incorpora páginas PDF, imágenes, blancos, rotaciones y overlays. |
@@ -304,7 +306,7 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Progreso/cancelación de exportación | 🟡 | Hay diálogo y cancelación entre páginas; una operación pesada dentro de una página no se interrumpe. |
 | Gestión de errores | 🟡 | Hay mensajes en importación/exportación y placeholder en preview; algunas excepciones de render se silencian. |
 | Cache de miniaturas | 🟡 | Existe un diccionario de cache, pero el refresco vuelve a renderizar y sobrescribir miniaturas ampliamente. |
-| Atajos | ✅ | Abrir, Guardar como, Undo/Redo, `Ctrl+Shift+Z` y giros de página. |
+| Atajos | ✅ | `Ctrl+N` nuevo, `Ctrl+O` abrir proyecto, `Ctrl+S` guardar, `Ctrl+Shift+S` guardar como, `Ctrl+Alt+O` añadir PDF, `Ctrl+Shift+E` exportar, más Undo/Redo y giros. |
 | Ejecución automatizada en Windows | ✅ | El batch crea `.venv`, instala requisitos y ejecuta. |
 | Empaquetado `.exe` | ✅ | Batch PyInstaller produce distribución `onedir`. |
 | Operación local/privada | ✅ | No existe código de red ni persistencia documental oculta. |
@@ -313,7 +315,10 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Independencia de originales | ✅ | Preview, miniaturas, edición y exportación resuelven `asset_id`; el original puede eliminarse después de importar. |
 | Manifiesto de workspace | ✅ | `workspace.json` registra versión, ID, creación y assets mediante reemplazo atómico. |
 | Edición de texto PDF existente | 🔴 | Explícitamente fuera de la versión actual. |
-| Guardar/abrir proyecto editable | 🔴 | El estado solo vive en memoria; únicamente se exporta el PDF final. |
+| Guardar/abrir proyecto editable | ✅ | Contenedor `.hpdf` portable con estado JSON explícito y assets embebidos. |
+| Nuevo proyecto | ✅ | Crea workspace vacío, limpia historial y registra un punto limpio. |
+| Guardar proyecto/Guardar como | ✅ | Escritura ZIP temporal, verificación y reemplazo atómico del destino. |
+| Abrir proyecto | ✅ | Validación completa, extracción segura a workspace nuevo y reconstrucción editable. |
 | PDF con contraseña | 🔴 | Se detecta, pero no se puede desbloquear. |
 
 ## 6. Funcionalidades pendientes
@@ -342,14 +347,13 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 
 ### Prioridad P2 — formatos, persistencia y distribución
 
-1. Guardar y reabrir un proyecto editable `.hpdf` a partir del workspace y sus assets embebidos.
-2. Recuperación automática ante cierre inesperado.
-3. Soporte de PDFs cifrados mediante solicitud de contraseña, sin persistirla.
-4. Elección de tamaño de papel, orientación y márgenes para páginas de imagen/blancas.
-5. Metadatos de aplicación, icono, información de versión y recursos de PyInstaller.
-6. Instalador, desinstalador, firma de código y proceso de release reproducible.
-7. CI para compilación, pruebas y smoke test del paquete.
-8. Archivo de bloqueo o registro de versiones probadas para builds oficiales.
+1. Recuperación automática ante cierre inesperado.
+2. Soporte de PDFs cifrados mediante solicitud de contraseña, sin persistirla.
+3. Elección de tamaño de papel, orientación y márgenes para páginas de imagen/blancas.
+4. Metadatos de aplicación, icono, información de versión y recursos de PyInstaller.
+5. Instalador, desinstalador, firma de código y proceso de release reproducible.
+6. CI para compilación, pruebas y smoke test del paquete.
+7. Archivo de bloqueo o registro de versiones probadas para builds oficiales.
 
 ### Prioridad P3 — ampliaciones de producto
 
@@ -472,7 +476,17 @@ Se eligió una sola unidad de código. Esto reduce fricción para una primera ap
 
 El programa no modifica fuentes. Al importar, `AssetManager` crea una copia interna identificada por `asset_id`; `source/path` se conserva temporalmente apuntando a esa copia para compatibilidad. Renderer y exportador consideran `asset_id` canónico y solo usan rutas directas como fallback para modelos antiguos. La exportación crea un documento nuevo y ya no depende del original.
 
-Cada ventana crea un workspace persistente en `%LOCALAPPDATA%\HabdornPDF\workspaces\<workspace_id>`. Si `LOCALAPPDATA` no está disponible o no puede usarse, se recurre al directorio temporal seguro del sistema. El workspace no se elimina al cerrar y todavía no se abre o recupera automáticamente.
+Cada ventana crea un workspace persistente en `%LOCALAPPDATA%\HabdornPDF\workspaces\<workspace_id>`. Si `LOCALAPPDATA` no está disponible o no puede usarse, se recurre al directorio temporal seguro del sistema. El workspace no se elimina al cerrar; abrir un `.hpdf` crea otro workspace y no existe recuperación automática de workspaces abandonados.
+
+### Formato de proyecto `.hpdf`
+
+Un `.hpdf` es un ZIP portable que el usuario trata como formato propio. Contiene únicamente `project.json` y `assets/<asset_id><extensión>`. El JSON guarda `format_version=1`, metadatos, orden, páginas, overlays y registros de assets sin `internal_path`. Al abrir, se valida todo el archivo antes de crear un workspace nuevo y reconstruir rutas internas.
+
+El guardado se construye en un temporal junto al destino, se reabre y valida, y solo entonces usa `os.replace`. La apertura no usa `extractall`: cada asset se copia por bloques a un temporal controlado, se verifica por tamaño/SHA-256, se sincroniza y se renombra atómicamente.
+
+### Dirty state orientado a proyecto
+
+El asterisco significa cambios no guardados en `.hpdf`. Guardar o abrir proyecto registra el punto limpio; exportar PDF no modifica el dirty state. Undo/Redo conserva la semántica de retorno exacto al último guardado mediante `QUndoStack.setClean`, índice y revisión directa.
 
 ### IDs estables independientes del orden
 
@@ -599,6 +613,16 @@ PyInstaller produce una carpeta, no un único ejecutable. Suele mejorar compatib
 14. Se cierran documento de salida y fuentes, y se muestra confirmación.
 15. Ante error, se cierran recursos defensivamente y se muestra el detalle.
 
+### 8. Guardado y apertura de proyecto
+
+1. Guardar sincroniza overlays, reúne solo assets utilizados y serializa modelos explícitamente.
+2. El servicio valida IDs, referencias, tipos, geometría, índices PDF, tamaños y hashes.
+3. Construye y verifica un ZIP temporal antes de reemplazar el `.hpdf`.
+4. Abrir valida estructura, versión, límites y rutas antes de modificar la ventana.
+5. Extrae a un workspace nuevo sin usar rutas originales ni el workspace anterior.
+6. `MainWindow` reemplaza estado, miniaturas y preview únicamente tras carga completa.
+7. El proyecto abierto queda limpio y puede seguir editándose/exportándose.
+
 ## 11. Dependencias
 
 ### Requisitos previos
@@ -721,6 +745,10 @@ Implementan respectivamente render/transformaciones y construcción del PDF fina
 
 Crea y mantiene el workspace, importa recursos mediante temporal + `os.replace`, calcula SHA-256 por bloques, deduplica y resuelve `asset_id` a rutas internas validadas. `workspace.json` es un manifiesto mínimo de assets, no un proyecto reabrible.
 
+### `services/project_service.py`
+
+Expone `save_project` y `load_project`, excepciones específicas y límites de seguridad. No conoce widgets ni dirty state. Valida ZIP/JSON/referencias, impide Zip Slip, limita entradas/tamaños y crea `ProjectData` con un `AssetManager` nuevo.
+
 ### `requirements.txt`
 
 Contrato de compatibilidad de dependencias. Cambiar límites puede alterar Qt, formatos de imagen, PDF o empaquetado. No añadir paquetes sin autorización y pruebas.
@@ -832,6 +860,7 @@ Basado en el historial Git disponible:
 - Modularización incremental autorizada y validada manualmente en Windows: punto de entrada, modelos, widgets, comandos y servicios separados sin nuevas dependencias ni cambios visibles intencionales.
 - En `feature/dirty-state`, funcionalidad validada manualmente en Windows: detección centralizada de cambios pendientes, título con asterisco, punto limpio ligado a exportación exitosa y confirmación segura al cerrar.
 - En `feature/embedded-assets`, primera etapa validada manualmente en Windows: workspace persistente, manifiesto atómico, copias internas deduplicadas e independencia de los originales; todavía sin formato `.hpdf` ni reapertura.
+- En `feature/hpdf-projects`, funcionalidad validada manualmente en Windows: formato `.hpdf` v1, guardado/apertura portables, dirty state basado en proyecto, menú Archivo ampliado y validación defensiva del contenedor.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
@@ -933,4 +962,4 @@ QApplication
 
 ## Apéndice C. Alcance explícitamente no presente
 
-No asumir que el proyecto ya soporta: edición de texto existente, OCR, formularios, firmas criptográficas, redacción segura, marcadores, enlaces, contraseñas, guardado de sesión/proyecto, autosave, pestañas, impresión, escáner, nube, colaboración, telemetría, actualizaciones automáticas, instalador o firma del ejecutable.
+No asumir que el proyecto ya soporta: edición de texto existente, OCR, formularios, firmas criptográficas, redacción segura, marcadores, enlaces, contraseñas, autosave, recuperación tras crash, migraciones `.hpdf`, pestañas, impresión, escáner, nube, colaboración, telemetría, actualizaciones automáticas, instalador o firma del ejecutable.

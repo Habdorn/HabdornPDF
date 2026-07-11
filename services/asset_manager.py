@@ -161,6 +161,36 @@ class AssetManager:
             )
         return str(path)
 
+    def register_asset(self, record: AssetRecord) -> None:
+        if record.id in self.assets:
+            raise AssetManagerError(
+                f"El asset interno ya está registrado: {record.id}"
+            )
+        path = Path(record.internal_path)
+        self._validate_internal_path(path)
+        if path.parent.resolve() != self.assets_path.resolve():
+            raise AssetManagerError(
+                "El asset debe estar dentro de la carpeta administrada."
+            )
+        if not path.is_file() or path.stat().st_size != record.size_bytes:
+            raise AssetManagerError(
+                f"No se pudo validar el asset interno: {record.original_name}"
+            )
+        content_key = (record.size_bytes, record.sha256)
+        existing_id = self._assets_by_content.get(content_key)
+        if existing_id and existing_id != record.id:
+            raise AssetManagerError(
+                "El contenido ya pertenece a otro asset del workspace."
+            )
+        self.assets[record.id] = record
+        self._assets_by_content[content_key] = record.id
+        try:
+            self._write_manifest()
+        except Exception:
+            self.assets.pop(record.id, None)
+            self._assets_by_content.pop(content_key, None)
+            raise
+
     def _validate_internal_path(self, path: Path) -> None:
         resolved = path.resolve()
         try:

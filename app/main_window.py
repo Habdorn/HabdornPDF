@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
@@ -29,6 +30,15 @@ from services.pdf_renderer import (
     rotate_rect,
     rotate_overlay,
     rotated_page_size,
+)
+from services.project_service import (
+    ProjectAssetError,
+    ProjectError,
+    ProjectFormatError,
+    ProjectVersionError,
+    load_project,
+    save_project,
+    utc_now,
 )
 from widgets.overlay_graphics_item import OverlayGraphicsItem
 from widgets.page_list_widget import PageListWidget
@@ -74,6 +84,10 @@ class MainWindow(QMainWindow):
 
         self.pages: Dict[str, PageModel] = {}
         self.asset_manager = asset_manager or AssetManager()
+        self.current_project_path: Optional[str] = None
+        self.project_id = uuid.uuid4().hex
+        self.project_created_at = utc_now()
+        self.project_modified_at = self.project_created_at
         self.current_page_id: Optional[str] = None
         self.overlay_items: Dict[str, OverlayGraphicsItem] = {}
         self.thumbnail_cache: Dict[str, QPixmap] = {}
@@ -152,7 +166,12 @@ class MainWindow(QMainWindow):
 
     def update_window_title(self) -> None:
         suffix = " *" if self.is_dirty else ""
-        self.setWindowTitle(f"{APP_NAME}{suffix}")
+        project_name = (
+            Path(self.current_project_path).name
+            if self.current_project_path
+            else "Sin título"
+        )
+        self.setWindowTitle(f"{project_name}{suffix} — {APP_NAME}")
 
     def _update_dirty_state(self, *args) -> None:
         undo_state_matches = (
@@ -168,7 +187,7 @@ class MainWindow(QMainWindow):
         self._direct_revision += 1
         self._update_dirty_state()
 
-    def _mark_exported_state(self) -> None:
+    def _mark_project_saved_state(self) -> None:
         self._saved_undo_index = self.undo_stack.index()
         self._saved_direct_revision = self._direct_revision
         self.undo_stack.setClean()
@@ -226,13 +245,35 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         self.file_menu = self.menuBar().addMenu("Archivo")
         file_menu = self.file_menu
+
+        new_project = QAction("Nuevo proyecto", self)
+        new_project.setShortcut(QKeySequence("Ctrl+N"))
+        new_project.triggered.connect(self.new_project)
+        file_menu.addAction(new_project)
+
+        open_project = QAction("Abrir proyecto…", self)
+        open_project.setShortcut(QKeySequence("Ctrl+O"))
+        open_project.triggered.connect(self.open_project)
+        file_menu.addAction(open_project)
+
+        save_project_action = QAction("Guardar proyecto", self)
+        save_project_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_project_action.triggered.connect(self.save_project)
+        file_menu.addAction(save_project_action)
+
+        save_project_as_action = QAction("Guardar proyecto como…", self)
+        save_project_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_project_as_action.triggered.connect(self.save_project_as)
+        file_menu.addAction(save_project_as_action)
+
+        file_menu.addSeparator()
         add_pdf = QAction("Añadir PDF", self)
-        add_pdf.setShortcut(QKeySequence.StandardKey.Open)
+        add_pdf.setShortcut(QKeySequence("Ctrl+Alt+O"))
         add_pdf.triggered.connect(self.add_pdfs)
         file_menu.addAction(add_pdf)
 
         export = QAction("Exportar PDF", self)
-        export.setShortcut(QKeySequence.StandardKey.SaveAs)
+        export.setShortcut(QKeySequence("Ctrl+Shift+E"))
         export.triggered.connect(self.export_pdf)
         file_menu.addAction(export)
 
@@ -257,6 +298,180 @@ class MainWindow(QMainWindow):
         rotate_right.setShortcut(QKeySequence("Ctrl+Shift+R"))
         rotate_right.triggered.connect(lambda: self.rotate_selected_pages(90))
         page_menu.addAction(rotate_right)
+
+    def new_project(self) -> None:
+        if self.is_dirty and not self._confirm_discard_changes():
+            return
+        try:
+            manager = AssetManager()
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"No se pudo crear un proyecto nuevo.\n\n{exc}",
+            )
+            return
+        self._replace_document(
+            manager,
+            {},
+            [],
+            project_path=None,
+            project_id=uuid.uuid4().hex,
+            created_at=utc_now(),
+            modified_at=utc_now(),
+        )
+        self.statusBar().showMessage("Proyecto nuevo", 4000)
+
+    def open_project(self) -> None:
+        if self.is_dirty and not self._confirm_discard_changes():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Abrir proyecto",
+            "",
+            "Proyecto Habdorn PDF (*.hpdf)",
+        )
+        if not path:
+            return
+        try:
+            project = load_project(path)
+        except ProjectVersionError as exc:
+            QMessageBox.critical(self, APP_NAME, str(exc))
+            return
+        except ProjectAssetError as exc:
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"Falta un recurso interno necesario para abrir el proyecto.\n\n{exc}",
+            )
+            return
+        except ProjectFormatError as exc:
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"El archivo de proyecto está dañado o no es válido.\n\n{exc}",
+            )
+            return
+        except ProjectError as exc:
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"No se pudo abrir el proyecto.\n\n{exc}",
+            )
+            return
+
+        self._replace_document(
+            project.asset_manager,
+            project.pages,
+            project.page_order,
+            project_path=project.source_project_path,
+            project_id=project.project_id,
+            created_at=project.created_at,
+            modified_at=project.modified_at,
+        )
+        self.statusBar().showMessage(
+            f"Proyecto abierto: {project.source_project_path}",
+            7000,
+        )
+
+    def save_project(self) -> bool:
+        if not self.current_project_path:
+            return self.save_project_as()
+        return self._save_project_to(self.current_project_path)
+
+    def save_project_as(self) -> bool:
+        suggested = self.current_project_path or "Proyecto.hpdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar proyecto como",
+            suggested,
+            "Proyecto Habdorn PDF (*.hpdf)",
+        )
+        if not path:
+            return False
+        return self._save_project_to(path)
+
+    def _save_project_to(self, path: str) -> bool:
+        self.save_current_overlay_positions()
+        modified_at = utc_now()
+        project_name = Path(path).stem or "Proyecto"
+        try:
+            saved_path = save_project(
+                path,
+                self.pages,
+                self.ordered_page_ids(),
+                self.asset_manager,
+                {
+                    "id": self.project_id,
+                    "name": project_name,
+                    "created_at": self.project_created_at,
+                    "modified_at": modified_at,
+                },
+            )
+        except ProjectError as exc:
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"No se pudo guardar el proyecto.\n\n{exc}",
+            )
+            return False
+        self.current_project_path = saved_path
+        self.project_modified_at = modified_at
+        self._mark_project_saved_state()
+        self.update_window_title()
+        self.statusBar().showMessage(f"Proyecto guardado: {saved_path}", 7000)
+        return True
+
+    def _replace_document(
+        self,
+        asset_manager: AssetManager,
+        pages: Dict[str, PageModel],
+        page_order: List[str],
+        *,
+        project_path: Optional[str],
+        project_id: str,
+        created_at: str,
+        modified_at: str,
+    ) -> None:
+        self._changing_selection = True
+        self.page_list.blockSignals(True)
+        try:
+            self.page_list.clear()
+            self.scene.clear()
+            self.pages.clear()
+            self.overlay_items.clear()
+            self.thumbnail_cache.clear()
+            self.current_page_id = None
+            self.asset_manager = asset_manager
+            self.current_project_path = project_path
+            self.project_id = project_id
+            self.project_created_at = created_at
+            self.project_modified_at = modified_at
+            for page_id in page_order:
+                model = deepcopy(pages[page_id])
+                self.pages[page_id] = model
+                item = QListWidgetItem(model.label)
+                item.setData(Qt.ItemDataRole.UserRole, model.id)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+                item.setToolTip(model.label)
+                self.page_list.addItem(item)
+                self._set_thumbnail(item, model)
+        finally:
+            self.page_list.blockSignals(False)
+            self._changing_selection = False
+
+        self.undo_stack.clear()
+        self._direct_revision += 1
+        if page_order:
+            self.page_list.setCurrentRow(0)
+            first_item = self.page_list.item(0)
+            first_item.setSelected(True)
+            self.load_page_into_preview(page_order[0])
+        else:
+            self.statusBar().showMessage("Proyecto vacío")
+        self._mark_project_saved_state()
+        self.refresh_thumbnail_layout()
+        self.update_window_title()
 
     def _build_undo_shortcuts(self) -> None:
         self.redo_shift_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
@@ -901,7 +1116,6 @@ class MainWindow(QMainWindow):
             progress.close()
             if not completed:
                 return
-            self._mark_exported_state()
             self.statusBar().showMessage(f"PDF exportado: {path}", 7000)
             QMessageBox.information(
                 self,
@@ -918,14 +1132,14 @@ class MainWindow(QMainWindow):
 
     def _confirm_discard_changes(self) -> bool:
         message_box = QMessageBox(self)
-        message_box.setWindowTitle("Cambios sin exportar")
+        message_box.setWindowTitle("Cambios sin guardar")
         message_box.setText(
-            "El documento contiene cambios que todavía no han sido "
-            "exportados.\n\n"
-            "¿Deseas cerrar la aplicación y perder esos cambios?"
+            "El proyecto contiene cambios que todavía no han sido "
+            "guardados.\n\n"
+            "¿Deseas continuar y perder esos cambios?"
         )
         close_button = message_box.addButton(
-            "Cerrar sin exportar",
+            "Descartar cambios",
             QMessageBox.ButtonRole.DestructiveRole,
         )
         cancel_button = message_box.addButton(
