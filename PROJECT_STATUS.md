@@ -120,7 +120,7 @@ La aplicación es un **programa de escritorio dirigido por eventos con separaci�
 
 ### Organización de carpetas
 
-El código se organiza en `app/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, recursos estáticos, archivos `.ui` ni configuración de CI. Los assets importados se crean fuera del repositorio, dentro de workspaces administrados.
+El código se organiza en `app/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, archivos `.ui` ni configuración de CI. Los SVG estáticos de la interfaz viven bajo `resources/`; los assets importados por el usuario se crean fuera del repositorio, dentro de workspaces administrados.
 
 ### Responsabilidades por componente
 
@@ -227,6 +227,7 @@ HabdornPDF/
 ├── app/
 │   ├── __init__.py
 │   ├── constants.py            # Nombre, A4 y formatos de imagen declarados.
+│   ├── lucide_resources.py     # Recursos Qt generados para incluir los SVG.
 │   └── main_window.py          # UI, estado y coordinación del flujo de usuario.
 ├── models/
 │   ├── __init__.py
@@ -250,7 +251,11 @@ HabdornPDF/
 │   ├── pdf_exporter.py         # Construcción técnica del PDF final.
 │   ├── pdf_renderer.py         # Render y transformaciones geométricas.
 │   └── project_service.py      # Guardado/apertura segura del formato .hpdf.
+├── resources/
+│   ├── lucide.qrc              # Manifiesto de recursos compilables por Qt.
+│   └── icons/lucide/           # Iconos SVG lineales usados por la mini-ribbon.
 ├── AGENTS.md
+├── THIRD_PARTY_NOTICES.md      # Atribución y licencia ISC de Lucide.
 ├── main.py                     # Punto de entrada mínimo.
 ├── requirements.txt
 ├── README.txt
@@ -481,7 +486,9 @@ Se eligió una sola unidad de código. Esto reduce fricción para una primera ap
 
 La interfaz mantiene un tema oscuro sobrio con tres niveles de superficie: ventana, panel y superficie activa. `UI_COLORS` centraliza la paleta. Menú, toolbar, panel de páginas, preview y status comparten bordes, espaciado y estados de foco/disabled.
 
-La toolbar reutiliza los mismos `QAction` del menú y agrupa historial, contenido, edición, página y salida. Usa dos filas administradas por Qt para mantener todas las acciones visibles a 1366×768; Guardar y Exportar permanecen alineados a la derecha. No se añadieron iconos ni funciones. La bienvenida y los mensajes vacíos son widgets visuales fuera del modelo; desaparecen al existir páginas y regresan al vaciar el documento.
+La toolbar evolucionó a una mini-ribbon compacta con icono arriba y texto abajo. Reutiliza los mismos `QAction` del menú y separa cinco grupos: Historial, Añadir, Contenido, Página y Proyecto. `Exportar PDF` conserva el mayor contraste, `Guardar` usa jerarquía secundaria y las eliminaciones solo muestran advertencia al pasar el cursor. Los trece iconos lineales proceden de Lucide y están versionados como SVG bajo `resources/icons/lucide/`.
+
+`resources/lucide.qrc` se compila a `app/lucide_resources.py`; `MainWindow` carga cada icono mediante una ruta Qt `:/icons/lucide/...`. Al ser un módulo Python importado normalmente, PyInstaller detecta e incorpora sus bytes sin requerir `--add-data` ni cambios en los scripts `.bat`. La bienvenida y los mensajes vacíos siguen siendo widgets visuales fuera del modelo; desaparecen al existir páginas y regresan al vaciar el documento.
 
 ### Edición no destructiva con assets administrados
 
@@ -880,6 +887,7 @@ Basado en el historial Git disponible:
 - En `feature/embedded-assets`, primera etapa validada manualmente en Windows: workspace persistente, manifiesto atómico, copias internas deduplicadas e independencia de los originales; todavía sin formato `.hpdf` ni reapertura.
 - En `feature/hpdf-projects`, funcionalidad validada manualmente en Windows: formato `.hpdf` v1, guardado/apertura portables, dirty state basado en proyecto, menú Archivo ampliado y validación defensiva del contenedor.
 - En `feature/ui-phase-1`, limpieza visual conservadora: toolbar agrupada, pantalla inicial, estados vacíos, contador, status contextual, espaciado y jerarquía de acciones.
+- En `feature/ui-ribbon-lucide`, cambio visual pendiente de validación manual: mini-ribbon de cinco grupos, trece SVG Lucide embebidos como recursos Qt, acción principal de exportación y estilos neutrales para eliminaciones.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
@@ -983,4 +991,4 @@ QApplication
 
 No asumir que el proyecto ya soporta: edición de texto existente, OCR, formularios, firmas criptográficas, redacción segura, marcadores, enlaces, contraseñas, autosave, recuperación tras crash, migraciones `.hpdf`, pestañas, impresión, escáner, nube, colaboración, telemetría, actualizaciones automáticas, instalador o firma del ejecutable.
 
-La Fase 1 visual no incluye panel de propiedades, iconos externos, temas múltiples, modo claro, preferencias visuales, animaciones complejas ni drag-and-drop de archivos.
+La interfaz actual no incluye panel de propiedades, temas múltiples, modo claro, preferencias visuales, animaciones complejas ni drag-and-drop de archivos.

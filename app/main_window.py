@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
+from app import lucide_resources  # noqa: F401 - registers Qt SVG resources
 from app.constants import A4_PORTRAIT, APP_NAME, UI_COLORS
 from commands.overlay_commands import (
     DeleteOverlaysCommand,
@@ -436,101 +437,118 @@ class MainWindow(QMainWindow):
         self.export_pdf_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
         self.export_pdf_action.triggered.connect(self.export_pdf)
 
-        self.toolbar_undo_action = QAction("Deshacer", self)
-        self.toolbar_undo_action.triggered.connect(self.undo_action.trigger)
-        self.toolbar_redo_action = QAction("Rehacer", self)
-        self.toolbar_redo_action.triggered.connect(self.redo_action.trigger)
-        self.undo_action.changed.connect(self._sync_toolbar_undo_redo_actions)
-        self.redo_action.changed.connect(self._sync_toolbar_undo_redo_actions)
-        self._sync_toolbar_undo_redo_actions()
+        action_icons = {
+            self.undo_action: "undo-2",
+            self.redo_action: "redo-2",
+            self.add_pdf_action: "file-text",
+            self.add_image_page_action: "image",
+            self.add_blank_page_action: "file-plus-2",
+            self.insert_image_action: "image-plus",
+            self.delete_image_action: "image-minus",
+            self.rotate_left_action: "rotate-ccw",
+            self.rotate_right_action: "rotate-cw",
+            self.delete_page_action: "trash-2",
+            self.open_project_action: "folder-open",
+            self.save_project_action: "save",
+            self.export_pdf_action: "file-output",
+        }
+        for action, icon_name in action_icons.items():
+            action.setIcon(QIcon(f":/icons/lucide/{icon_name}.svg"))
 
     def _build_toolbar(self) -> None:
-        self.toolbar = QToolBar("Herramientas")
-        self.toolbar.setObjectName("mainToolbar")
+        self.toolbar = QToolBar("Mini-ribbon")
+        self.toolbar.setObjectName("miniRibbon")
         self.toolbar.setMovable(False)
         self.toolbar.setFloatable(False)
-        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.toolbar.setContentsMargins(8, 4, 8, 4)
+        self.toolbar.setContentsMargins(8, 3, 8, 3)
+        self.toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(self.toolbar)
+        self._ribbon_buttons: Dict[QAction, QToolButton] = {}
+        groups = (
+            ("Historial", (
+                (self.undo_action, "Deshacer", "normal"),
+                (self.redo_action, "Rehacer", "normal"),
+            )),
+            ("Añadir", (
+                (self.add_pdf_action, "PDF", "normal"),
+                (self.add_image_page_action, "Imagen", "normal"),
+                (self.add_blank_page_action, "Página blanca", "normal"),
+            )),
+            ("Contenido", (
+                (self.insert_image_action, "Insertar imagen", "normal"),
+                (self.delete_image_action, "Eliminar imagen", "destructive"),
+            )),
+            ("Página", (
+                (self.rotate_left_action, "Girar izq.", "normal"),
+                (self.rotate_right_action, "Girar der.", "normal"),
+                (self.delete_page_action, "Eliminar página", "destructive"),
+            )),
+            ("Proyecto", (
+                (self.open_project_action, "Abrir proyecto", "normal"),
+                (self.save_project_action, "Guardar", "secondary"),
+                (self.export_pdf_action, "Exportar PDF", "primary"),
+            )),
+        )
+        for index, (name, actions) in enumerate(groups):
+            if index:
+                self.toolbar.addSeparator()
+            self.toolbar.addWidget(self._build_ribbon_group(name, actions))
 
-        self._add_toolbar_action(self.toolbar_undo_action)
-        self._add_toolbar_action(self.toolbar_redo_action)
-        self.toolbar.addSeparator()
+        self.undo_action.changed.connect(self._queue_ribbon_history_sync)
+        self.redo_action.changed.connect(self._queue_ribbon_history_sync)
+        self._sync_ribbon_history_buttons()
 
-        self._add_toolbar_action(self.add_pdf_action, display_text="+ PDF")
-        self._add_toolbar_action(self.add_image_page_action)
-        self._add_toolbar_action(self.add_blank_page_action)
-        self.toolbar.addSeparator()
-        self._add_toolbar_action(self.insert_image_action)
-        self._add_toolbar_action(self.delete_image_action, "destructive")
-        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
-        self.page_toolbar = QToolBar("Página y salida")
-        self.page_toolbar.setObjectName("mainToolbar")
-        self.page_toolbar.setMovable(False)
-        self.page_toolbar.setFloatable(False)
-        self.page_toolbar.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextOnly
-        )
-        self.page_toolbar.setContentsMargins(8, 4, 8, 4)
-        self.addToolBar(self.page_toolbar)
-
-        self._add_toolbar_action(
-            self.rotate_left_action,
-            toolbar=self.page_toolbar,
-        )
-        self._add_toolbar_action(
-            self.rotate_right_action,
-            toolbar=self.page_toolbar,
-        )
-        self._add_toolbar_action(
-            self.delete_page_action,
-            "destructive",
-            toolbar=self.page_toolbar,
-        )
-        self.page_toolbar.addSeparator()
-
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.page_toolbar.addWidget(spacer)
-        self._add_toolbar_action(
-            self.save_project_action,
-            "secondary",
-            display_text="Guardar",
-            toolbar=self.page_toolbar,
-        )
-        self._add_toolbar_action(
-            self.export_pdf_action,
-            "primary",
-            toolbar=self.page_toolbar,
-        )
-
-    def _add_toolbar_action(
+    def _build_ribbon_group(
         self,
-        action: QAction,
-        role: str = "normal",
-        display_text: Optional[str] = None,
-        toolbar: Optional[QToolBar] = None,
-    ) -> None:
-        target_toolbar = toolbar or self.toolbar
-        target_toolbar.addAction(action)
-        button = target_toolbar.widgetForAction(action)
-        if isinstance(button, QToolButton):
-            button.setProperty("role", role)
-            button.setMinimumHeight(34)
-            button.setSizePolicy(
-                QSizePolicy.Policy.Maximum,
-                QSizePolicy.Policy.Preferred,
-            )
-            if display_text:
-                button.setText(display_text)
+        name: str,
+        actions: Tuple[Tuple[QAction, str, str], ...],
+    ) -> QWidget:
+        group = QWidget()
+        group.setObjectName("ribbonGroup")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(2, 1, 2, 0)
+        layout.setSpacing(1)
 
-    def _sync_toolbar_undo_redo_actions(self) -> None:
-        self.toolbar_undo_action.setText("Deshacer")
-        self.toolbar_undo_action.setToolTip(self.undo_action.text())
-        self.toolbar_undo_action.setEnabled(self.undo_action.isEnabled())
-        self.toolbar_redo_action.setText("Rehacer")
-        self.toolbar_redo_action.setToolTip(self.redo_action.text())
-        self.toolbar_redo_action.setEnabled(self.redo_action.isEnabled())
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(3)
+        for action, text, role in actions:
+            button = QToolButton()
+            button.setDefaultAction(action)
+            button.setText(text)
+            button.setProperty("role", role)
+            button.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+            )
+            button.setIconSize(QSize(20, 20))
+            button.setMinimumSize(66, 48)
+            button.setMaximumHeight(52)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Fixed,
+            )
+            buttons_layout.addWidget(button)
+            self._ribbon_buttons[action] = button
+        layout.addLayout(buttons_layout)
+
+        label = QLabel(name)
+        label.setObjectName("ribbonGroupLabel")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+        return group
+
+    def _queue_ribbon_history_sync(self) -> None:
+        QTimer.singleShot(0, self._sync_ribbon_history_buttons)
+
+    def _sync_ribbon_history_buttons(self) -> None:
+        undo_button = self._ribbon_buttons.get(self.undo_action)
+        redo_button = self._ribbon_buttons.get(self.redo_action)
+        if undo_button is not None:
+            undo_button.setText("Deshacer")
+            undo_button.setToolTip(self.undo_action.text())
+        if redo_button is not None:
+            redo_button.setText("Rehacer")
+            redo_button.setToolTip(self.redo_action.text())
 
     def _build_menu(self) -> None:
         self.file_menu = self.menuBar().addMenu("Archivo")
@@ -768,50 +786,63 @@ class MainWindow(QMainWindow):
                 padding: 6px;
             }}
             QMenu::item {{ padding: 7px 28px 7px 12px; border-radius: 4px; }}
-            QToolBar#mainToolbar {{
+            QToolBar#miniRibbon {{
                 background: {colors['window']};
                 border: 0;
                 border-top: 1px solid {colors['border']};
                 border-bottom: 1px solid {colors['border']};
-                spacing: 4px;
-                padding: 7px 10px;
+                spacing: 2px;
+                padding: 3px 8px;
             }}
-            QToolBar::separator {{
+            QToolBar#miniRibbon::separator {{
                 background: {colors['border']};
                 width: 1px;
-                margin: 7px 6px;
+                margin: 6px 4px 5px 4px;
             }}
-            QToolButton {{
+            QWidget#ribbonGroup {{ background: transparent; }}
+            QLabel#ribbonGroupLabel {{
+                color: {colors['muted']};
+                font-size: 9px;
+                padding: 0;
+            }}
+            QWidget#ribbonGroup QToolButton {{
                 background: {colors['surface']};
                 color: {colors['text']};
-                font-size: 11px;
+                font-size: 10px;
                 border: 1px solid {colors['border']};
                 border-radius: 6px;
-                padding: 5px 7px;
+                padding: 3px 4px;
             }}
-            QToolButton:hover {{
+            QWidget#ribbonGroup QToolButton:hover {{
                 background: {colors['surface_hover']};
                 border-color: {colors['accent']};
             }}
-            QToolButton:pressed {{ background: {colors['accent']}; }}
-            QToolButton:focus {{ border: 1px solid {colors['accent_hover']}; }}
-            QToolButton:disabled {{
+            QWidget#ribbonGroup QToolButton:pressed {{
+                background: {colors['accent']};
+                border-style: inset;
+            }}
+            QWidget#ribbonGroup QToolButton:focus {{
+                border: 1px solid {colors['accent_hover']};
+            }}
+            QWidget#ribbonGroup QToolButton:disabled {{
                 background: #23272e;
                 color: #69717d;
                 border-color: #303640;
             }}
-            QToolButton[role="primary"] {{
+            QWidget#ribbonGroup QToolButton[role="primary"] {{
                 background: {colors['accent']};
                 border-color: {colors['accent_hover']};
                 font-weight: 700;
             }}
-            QToolButton[role="primary"]:hover {{ background: {colors['accent_hover']}; }}
-            QToolButton[role="secondary"] {{
+            QWidget#ribbonGroup QToolButton[role="primary"]:hover {{
+                background: {colors['accent_hover']};
+            }}
+            QWidget#ribbonGroup QToolButton[role="secondary"] {{
                 background: #303844;
                 border-color: #596678;
                 font-weight: 600;
             }}
-            QToolButton[role="destructive"]:hover {{
+            QWidget#ribbonGroup QToolButton[role="destructive"]:hover {{
                 background: #43332f;
                 border-color: {colors['warning']};
             }}

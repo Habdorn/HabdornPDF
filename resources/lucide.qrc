@@ -1,0 +1,17 @@
+<RCC>
+  <qresource prefix="/icons/lucide">
+    <file alias="undo-2.svg">icons/lucide/undo-2.svg</file>
+    <file alias="redo-2.svg">icons/lucide/redo-2.svg</file>
+    <file alias="file-text.svg">icons/lucide/file-text.svg</file>
+    <file alias="image.svg">icons/lucide/image.svg</file>
+    <file alias="file-plus-2.svg">icons/lucide/file-plus-2.svg</file>
+    <file alias="image-plus.svg">icons/lucide/image-plus.svg</file>
+    <file alias="image-minus.svg">icons/lucide/image-minus.svg</file>
+    <file alias="rotate-ccw.svg">icons/lucide/rotate-ccw.svg</file>
+    <file alias="rotate-cw.svg">icons/lucide/rotate-cw.svg</file>
+    <file alias="trash-2.svg">icons/lucide/trash-2.svg</file>
+    <file alias="folder-open.svg">icons/lucide/folder-open.svg</file>
+    <file alias="save.svg">icons/lucide/save.svg</file>
+    <file alias="file-output.svg">icons/lucide/file-output.svg</file>
+  </qresource>
+</RCC>
