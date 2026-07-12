@@ -314,6 +314,11 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Deduplicación de assets | ✅ | Reutiliza contenido idéntico por tamaño y SHA-256 sin cargar archivos completos en memoria. |
 | Independencia de originales | ✅ | Preview, miniaturas, edición y exportación resuelven `asset_id`; el original puede eliminarse después de importar. |
 | Manifiesto de workspace | ✅ | `workspace.json` registra versión, ID, creación y assets mediante reemplazo atómico. |
+| Pantalla inicial útil | ✅ | El documento vacío muestra bienvenida, accesos para añadir contenido y apertura de `.hpdf`. |
+| Estado vacío de páginas | ✅ | El panel lateral muestra instrucciones sin insertar elementos ficticios en la lista. |
+| Contador de páginas | ✅ | Actualización automática para importación, eliminación, Undo/Redo, nuevo y apertura. |
+| Toolbar jerarquizada | ✅ | Acciones compartidas agrupadas; guardar es secundaria, exportar principal y eliminar usa hover cauteloso. |
+| Barra de estado contextual | ✅ | Informa estado guardado/modificado, página seleccionada y progreso complementario. |
 | Edición de texto PDF existente | 🔴 | Explícitamente fuera de la versión actual. |
 | Guardar/abrir proyecto editable | ✅ | Contenedor `.hpdf` portable con estado JSON explícito y assets embebidos. |
 | Nuevo proyecto | ✅ | Crea workspace vacío, limpia historial y registra un punto limpio. |
@@ -472,6 +477,12 @@ Los archivos deben conservar UTF-8 y el texto visible en español. Cualquier moj
 
 Se eligió una sola unidad de código. Esto reduce fricción para una primera aplicación y su empaquetado, pero ahora limita pruebas y evolución. Las reglas dejan claro que la base actual es canónica: no debe reescribirse ni reorganizarse sin permiso.
 
+### Fase 1 de interfaz
+
+La interfaz mantiene un tema oscuro sobrio con tres niveles de superficie: ventana, panel y superficie activa. `UI_COLORS` centraliza la paleta. Menú, toolbar, panel de páginas, preview y status comparten bordes, espaciado y estados de foco/disabled.
+
+La toolbar reutiliza los mismos `QAction` del menú y agrupa historial, contenido, edición, página y salida. Usa dos filas administradas por Qt para mantener todas las acciones visibles a 1366×768; Guardar y Exportar permanecen alineados a la derecha. No se añadieron iconos ni funciones. La bienvenida y los mensajes vacíos son widgets visuales fuera del modelo; desaparecen al existir páginas y regresan al vaciar el documento.
+
 ### Edición no destructiva con assets administrados
 
 El programa no modifica fuentes. Al importar, `AssetManager` crea una copia interna identificada por `asset_id`; `source/path` se conserva temporalmente apuntando a esa copia para compatibilidad. Renderer y exportador consideran `asset_id` canónico y solo usan rutas directas como fallback para modelos antiguos. La exportación crea un documento nuevo y ya no depende del original.
@@ -622,6 +633,13 @@ PyInstaller produce una carpeta, no un único ejecutable. Suele mejorar compatib
 5. Extrae a un workspace nuevo sin usar rutas originales ni el workspace anterior.
 6. `MainWindow` reemplaza estado, miniaturas y preview únicamente tras carga completa.
 7. El proyecto abierto queda limpio y puede seguir editándose/exportándose.
+
+### 9. Sincronización visual de la interfaz
+
+1. Toda mutación existente termina actualizando contador, stacked widgets y disponibilidad de acciones.
+2. Con cero páginas se muestran la bienvenida y el mensaje lateral; con contenido se muestra el preview sin cambiar su geometría.
+3. La barra de estado combina dirty state, cantidad y selección.
+4. Mensajes operativos son temporales y luego restauran automáticamente el estado persistente.
 
 ## 11. Dependencias
 
@@ -861,6 +879,7 @@ Basado en el historial Git disponible:
 - En `feature/dirty-state`, funcionalidad validada manualmente en Windows: detección centralizada de cambios pendientes, título con asterisco, punto limpio ligado a exportación exitosa y confirmación segura al cerrar.
 - En `feature/embedded-assets`, primera etapa validada manualmente en Windows: workspace persistente, manifiesto atómico, copias internas deduplicadas e independencia de los originales; todavía sin formato `.hpdf` ni reapertura.
 - En `feature/hpdf-projects`, funcionalidad validada manualmente en Windows: formato `.hpdf` v1, guardado/apertura portables, dirty state basado en proyecto, menú Archivo ampliado y validación defensiva del contenedor.
+- En `feature/ui-phase-1`, limpieza visual conservadora: toolbar agrupada, pantalla inicial, estados vacíos, contador, status contextual, espaciado y jerarquía de acciones.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
@@ -963,3 +982,5 @@ QApplication
 ## Apéndice C. Alcance explícitamente no presente
 
 No asumir que el proyecto ya soporta: edición de texto existente, OCR, formularios, firmas criptográficas, redacción segura, marcadores, enlaces, contraseñas, autosave, recuperación tras crash, migraciones `.hpdf`, pestañas, impresión, escáner, nube, colaboración, telemetría, actualizaciones automáticas, instalador o firma del ejecutable.
+
+La Fase 1 visual no incluye panel de propiedades, iconos externos, temas múltiples, modo claro, preferencias visuales, animaciones complejas ni drag-and-drop de archivos.

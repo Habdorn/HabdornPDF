@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
-from app.constants import A4_PORTRAIT, APP_NAME
+from app.constants import A4_PORTRAIT, APP_NAME, UI_COLORS
 from commands.overlay_commands import (
     DeleteOverlaysCommand,
     InsertOverlayCommand,
@@ -60,7 +60,9 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
+    QFrame,
     QGraphicsScene,
+    QHBoxLayout,
     QLabel,
     QListView,
     QListWidget,
@@ -68,8 +70,12 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressDialog,
+    QPushButton,
+    QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -92,6 +98,8 @@ class MainWindow(QMainWindow):
         self.overlay_items: Dict[str, OverlayGraphicsItem] = {}
         self.thumbnail_cache: Dict[str, QPixmap] = {}
         self._changing_selection = False
+        self._status_generation = 0
+        self._has_temporary_status = False
         self.undo_stack = QUndoStack(self)
         self.undo_stack.setUndoLimit(20)
         self._direct_revision = 0
@@ -101,10 +109,12 @@ class MainWindow(QMainWindow):
         self.undo_stack.indexChanged.connect(self._update_dirty_state)
         self.undo_stack.cleanChanged.connect(self._update_dirty_state)
         self.undo_stack.setClean()
+        self._create_actions()
 
         self.scene = QGraphicsScene(self)
         self.preview = PreviewView(self.scene)
         self.preview.delete_pressed.connect(self.delete_selected_overlays)
+        self.scene.selectionChanged.connect(self._update_action_states)
 
         self.page_list = PageListWidget()
         self.page_list.setViewMode(QListView.ViewMode.ListMode)
@@ -124,45 +134,217 @@ class MainWindow(QMainWindow):
         self.page_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.page_list.setSpacing(12)
         self.page_list.currentItemChanged.connect(self.on_page_changed)
+        self.page_list.itemSelectionChanged.connect(self._update_action_states)
         self.page_list.native_drop_finished.connect(self.on_native_drop_finished)
 
         left = QWidget()
+        left.setObjectName("pagePanel")
+        left.setMinimumWidth(270)
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(10, 10, 8, 10)
+        left_layout.setContentsMargins(16, 18, 12, 14)
+        left_layout.setSpacing(12)
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(2, 0, 2, 0)
+        header_layout.setSpacing(8)
         title = QLabel("PÁGINAS")
         title.setObjectName("sectionTitle")
-        left_layout.addWidget(title)
-        left_layout.addWidget(self.page_list)
+        self.page_count_label = QLabel("0 páginas")
+        self.page_count_label.setObjectName("pageCount")
+        header_layout.addWidget(title)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.page_count_label)
+        left_layout.addLayout(header_layout)
+
+        self.page_list_stack = QStackedWidget()
+        self.page_list_stack.setObjectName("pageListStack")
+        self.page_list_stack.addWidget(self._build_empty_pages_widget())
+        self.page_list_stack.addWidget(self.page_list)
+        left_layout.addWidget(self.page_list_stack, 1)
 
         right = QWidget()
+        right.setObjectName("workspacePanel")
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(8, 10, 10, 10)
-        help_label = QLabel(
-            "Arrastra las miniaturas para reordenar. En la página, mueve la imagen y usa el cuadro azul para cambiar su tamaño. Ctrl + rueda: zoom."
+        right_layout.setContentsMargins(12, 18, 16, 14)
+        right_layout.setSpacing(10)
+        self.help_label = QLabel(
+            "Arrastra las miniaturas para reordenar · Ctrl + rueda para hacer zoom"
         )
-        help_label.setWordWrap(True)
-        help_label.setObjectName("helpText")
-        right_layout.addWidget(help_label)
-        right_layout.addWidget(self.preview, 1)
+        self.help_label.setWordWrap(True)
+        self.help_label.setObjectName("helpText")
+        self.help_label.setToolTip(
+            "Selecciona una imagen insertada para moverla, redimensionarla o rotarla."
+        )
+        right_layout.addWidget(self.help_label)
+
+        preview_frame = QFrame()
+        preview_frame.setObjectName("previewFrame")
+        preview_layout = QVBoxLayout(preview_frame)
+        preview_layout.setContentsMargins(8, 8, 8, 8)
+        preview_layout.addWidget(self.preview)
+
+        self.preview_stack = QStackedWidget()
+        self.preview_stack.setObjectName("previewStack")
+        self.preview_stack.addWidget(self._build_welcome_widget())
+        self.preview_stack.addWidget(preview_frame)
+        right_layout.addWidget(self.preview_stack, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setSizes([340, 1050])
+        splitter.setHandleWidth(1)
+        splitter.setSizes([310, 1110])
         self.setCentralWidget(splitter)
 
         self._build_toolbar()
         self._build_menu()
         self._build_undo_shortcuts()
         self._apply_style()
-        self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
         self.update_window_title()
+        self._update_document_ui()
+
+    def _build_empty_pages_widget(self) -> QWidget:
+        widget = QWidget()
+        widget.setObjectName("emptyPages")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addStretch(1)
+        title = QLabel("Todavía no hay páginas")
+        title.setObjectName("emptyPagesTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description = QLabel(
+            "Añade un PDF, una imagen\no una página en blanco."
+        )
+        description.setObjectName("emptyPagesText")
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+        layout.addWidget(description)
+        layout.addStretch(1)
+        return widget
+
+    def _build_welcome_widget(self) -> QWidget:
+        widget = QWidget()
+        widget.setObjectName("welcomePage")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.addStretch(2)
+
+        title = QLabel("Crea un documento")
+        title.setObjectName("welcomeTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description = QLabel(
+            "Añade un PDF, una imagen o una página en blanco\npara comenzar."
+        )
+        description.setObjectName("welcomeText")
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        layout.addSpacing(10)
+        layout.addWidget(description)
+        layout.addSpacing(26)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch(1)
+        for text, action in (
+            ("Añadir PDF", self.add_pdf_action),
+            ("Añadir imagen", self.add_image_page_action),
+            ("Página en blanco", self.add_blank_page_action),
+        ):
+            button = QPushButton(text)
+            button.setProperty("role", "welcome")
+            button.setMinimumHeight(38)
+            button.clicked.connect(
+                lambda checked=False, selected_action=action: selected_action.trigger()
+            )
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        layout.addSpacing(14)
+
+        open_project = QPushButton("Abrir proyecto .hpdf")
+        open_project.setProperty("role", "link")
+        open_project.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_project.clicked.connect(
+            lambda checked=False: self.open_project_action.trigger()
+        )
+        layout.addWidget(open_project, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch(3)
+        return widget
+
+    def _update_document_ui(self) -> None:
+        count = self.page_list.count()
+        label = "1 página" if count == 1 else f"{count} páginas"
+        self.page_count_label.setText(label)
+        has_pages = count > 0
+        self.page_list_stack.setCurrentIndex(1 if has_pages else 0)
+        self.preview_stack.setCurrentIndex(1 if has_pages else 0)
+        self.help_label.setVisible(has_pages)
+        self._update_action_states()
+        self.update_status_bar()
+
+    def _update_action_states(self) -> None:
+        selected_pages = bool(self.page_list.selectedItems())
+        has_current_page = (
+            self.current_page_id is not None
+            and self.current_page_id in self.pages
+        )
+        selected_overlay = any(
+            isinstance(item, OverlayGraphicsItem)
+            for item in self.scene.selectedItems()
+        )
+        self.insert_image_action.setEnabled(has_current_page)
+        self.delete_image_action.setEnabled(selected_overlay)
+        self.rotate_left_action.setEnabled(selected_pages)
+        self.rotate_right_action.setEnabled(selected_pages)
+        self.delete_page_action.setEnabled(selected_pages)
+        self.export_pdf_action.setEnabled(self.page_list.count() > 0)
+
+    def _show_temporary_status(self, message: str, timeout: int = 4000) -> None:
+        self._status_generation += 1
+        self._has_temporary_status = True
+        generation = self._status_generation
+        self.statusBar().showMessage(message)
+        QTimer.singleShot(
+            timeout,
+            lambda: self._restore_status(generation),
+        )
+
+    def _restore_status(self, generation: int) -> None:
+        if generation != self._status_generation:
+            return
+        self._has_temporary_status = False
+        self.update_status_bar()
+
+    def update_status_bar(self, force: bool = False) -> None:
+        if self._has_temporary_status and not force:
+            return
+        count = self.page_list.count()
+        if count == 0:
+            message = "Cambios sin guardar" if self.is_dirty else "Listo"
+        else:
+            current_row = self.page_list.currentRow()
+            selection = (
+                f"Página {current_row + 1} seleccionada"
+                if current_row >= 0
+                else "Sin página seleccionada"
+            )
+            document_state = (
+                "Cambios sin guardar"
+                if self.is_dirty
+                else "Proyecto guardado"
+                if self.current_project_path
+                else "Listo"
+            )
+            count_text = "1 página" if count == 1 else f"{count} páginas"
+            message = f"{document_state} · {count_text} · {selection}"
+        self.statusBar().showMessage(message)
 
     def set_dirty(self, dirty: bool = True) -> None:
         if self.is_dirty == dirty:
             return
         self.is_dirty = dirty
         self.update_window_title()
+        self.update_status_bar()
 
     def update_window_title(self) -> None:
         suffix = " *" if self.is_dirty else ""
@@ -193,18 +375,67 @@ class MainWindow(QMainWindow):
         self.undo_stack.setClean()
         self._update_dirty_state()
 
-    def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Herramientas")
-        toolbar.setMovable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.addToolBar(toolbar)
-
+    def _create_actions(self) -> None:
         self.undo_action = self.undo_stack.createUndoAction(self, "Deshacer")
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.redo_action = self.undo_stack.createRedoAction(self, "Rehacer")
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+
+        self.new_project_action = QAction("Nuevo proyecto", self)
+        self.new_project_action.setShortcut(QKeySequence("Ctrl+N"))
+        self.new_project_action.triggered.connect(self.new_project)
+
+        self.open_project_action = QAction("Abrir proyecto…", self)
+        self.open_project_action.setShortcut(QKeySequence("Ctrl+O"))
+        self.open_project_action.triggered.connect(self.open_project)
+
+        self.save_project_action = QAction("Guardar proyecto", self)
+        self.save_project_action.setShortcut(QKeySequence("Ctrl+S"))
+        self.save_project_action.triggered.connect(self.save_project)
+
+        self.save_project_as_action = QAction("Guardar proyecto como…", self)
+        self.save_project_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.save_project_as_action.triggered.connect(self.save_project_as)
+
+        self.add_pdf_action = QAction("Añadir PDF", self)
+        self.add_pdf_action.setShortcut(QKeySequence("Ctrl+Alt+O"))
+        self.add_pdf_action.triggered.connect(self.add_pdfs)
+        self.add_pdf_action.setToolTip("Añadir uno o varios archivos PDF")
+
+        self.add_image_page_action = QAction("+ Imagen como página", self)
+        self.add_image_page_action.triggered.connect(self.add_images_as_pages)
+        self.add_image_page_action.setToolTip("Añadir imágenes como páginas A4")
+
+        self.add_blank_page_action = QAction("+ Página en blanco", self)
+        self.add_blank_page_action.triggered.connect(self.add_blank_page)
+
+        self.insert_image_action = QAction("Insertar imagen", self)
+        self.insert_image_action.triggered.connect(self.add_overlay_image)
+
+        self.rotate_left_action = QAction("Rotar izquierda", self)
+        self.rotate_left_action.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self.rotate_left_action.triggered.connect(
+            lambda: self.rotate_selected_pages(-90)
+        )
+
+        self.rotate_right_action = QAction("Rotar derecha", self)
+        self.rotate_right_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self.rotate_right_action.triggered.connect(
+            lambda: self.rotate_selected_pages(90)
+        )
+
+        self.delete_image_action = QAction("Eliminar imagen", self)
+        self.delete_image_action.triggered.connect(self.delete_selected_overlays)
+
+        self.delete_page_action = QAction("Eliminar página", self)
+        self.delete_page_action.triggered.connect(self.delete_selected_pages)
+
+        self.export_pdf_action = QAction("Exportar PDF", self)
+        self.export_pdf_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        self.export_pdf_action.triggered.connect(self.export_pdf)
+
         self.toolbar_undo_action = QAction("Deshacer", self)
         self.toolbar_undo_action.triggered.connect(self.undo_action.trigger)
         self.toolbar_redo_action = QAction("Rehacer", self)
@@ -212,27 +443,86 @@ class MainWindow(QMainWindow):
         self.undo_action.changed.connect(self._sync_toolbar_undo_redo_actions)
         self.redo_action.changed.connect(self._sync_toolbar_undo_redo_actions)
         self._sync_toolbar_undo_redo_actions()
-        toolbar.addAction(self.toolbar_undo_action)
-        toolbar.addAction(self.toolbar_redo_action)
-        toolbar.addSeparator()
 
-        actions = [
-            ("+ PDF", self.add_pdfs),
-            ("+ Imagen como página", self.add_images_as_pages),
-            ("+ Página en blanco", self.add_blank_page),
-            ("Insertar imagen", self.add_overlay_image),
-            ("Rotar izquierda", lambda: self.rotate_selected_pages(-90)),
-            ("Rotar derecha", lambda: self.rotate_selected_pages(90)),
-            ("Eliminar imagen", self.delete_selected_overlays),
-            ("Eliminar página", self.delete_selected_pages),
-            ("Exportar PDF", self.export_pdf),
-        ]
-        for text, callback in actions:
-            action = QAction(text, self)
-            action.triggered.connect(callback)
-            toolbar.addAction(action)
-            if text in {"+ Página en blanco", "Eliminar página"}:
-                toolbar.addSeparator()
+    def _build_toolbar(self) -> None:
+        self.toolbar = QToolBar("Herramientas")
+        self.toolbar.setObjectName("mainToolbar")
+        self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.toolbar.setContentsMargins(8, 4, 8, 4)
+        self.addToolBar(self.toolbar)
+
+        self._add_toolbar_action(self.toolbar_undo_action)
+        self._add_toolbar_action(self.toolbar_redo_action)
+        self.toolbar.addSeparator()
+
+        self._add_toolbar_action(self.add_pdf_action, display_text="+ PDF")
+        self._add_toolbar_action(self.add_image_page_action)
+        self._add_toolbar_action(self.add_blank_page_action)
+        self.toolbar.addSeparator()
+        self._add_toolbar_action(self.insert_image_action)
+        self._add_toolbar_action(self.delete_image_action, "destructive")
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.page_toolbar = QToolBar("Página y salida")
+        self.page_toolbar.setObjectName("mainToolbar")
+        self.page_toolbar.setMovable(False)
+        self.page_toolbar.setFloatable(False)
+        self.page_toolbar.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        self.page_toolbar.setContentsMargins(8, 4, 8, 4)
+        self.addToolBar(self.page_toolbar)
+
+        self._add_toolbar_action(
+            self.rotate_left_action,
+            toolbar=self.page_toolbar,
+        )
+        self._add_toolbar_action(
+            self.rotate_right_action,
+            toolbar=self.page_toolbar,
+        )
+        self._add_toolbar_action(
+            self.delete_page_action,
+            "destructive",
+            toolbar=self.page_toolbar,
+        )
+        self.page_toolbar.addSeparator()
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.page_toolbar.addWidget(spacer)
+        self._add_toolbar_action(
+            self.save_project_action,
+            "secondary",
+            display_text="Guardar",
+            toolbar=self.page_toolbar,
+        )
+        self._add_toolbar_action(
+            self.export_pdf_action,
+            "primary",
+            toolbar=self.page_toolbar,
+        )
+
+    def _add_toolbar_action(
+        self,
+        action: QAction,
+        role: str = "normal",
+        display_text: Optional[str] = None,
+        toolbar: Optional[QToolBar] = None,
+    ) -> None:
+        target_toolbar = toolbar or self.toolbar
+        target_toolbar.addAction(action)
+        button = target_toolbar.widgetForAction(action)
+        if isinstance(button, QToolButton):
+            button.setProperty("role", role)
+            button.setMinimumHeight(34)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Maximum,
+                QSizePolicy.Policy.Preferred,
+            )
+            if display_text:
+                button.setText(display_text)
 
     def _sync_toolbar_undo_redo_actions(self) -> None:
         self.toolbar_undo_action.setText("Deshacer")
@@ -245,37 +535,14 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         self.file_menu = self.menuBar().addMenu("Archivo")
         file_menu = self.file_menu
-
-        new_project = QAction("Nuevo proyecto", self)
-        new_project.setShortcut(QKeySequence("Ctrl+N"))
-        new_project.triggered.connect(self.new_project)
-        file_menu.addAction(new_project)
-
-        open_project = QAction("Abrir proyecto…", self)
-        open_project.setShortcut(QKeySequence("Ctrl+O"))
-        open_project.triggered.connect(self.open_project)
-        file_menu.addAction(open_project)
-
-        save_project_action = QAction("Guardar proyecto", self)
-        save_project_action.setShortcut(QKeySequence("Ctrl+S"))
-        save_project_action.triggered.connect(self.save_project)
-        file_menu.addAction(save_project_action)
-
-        save_project_as_action = QAction("Guardar proyecto como…", self)
-        save_project_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        save_project_as_action.triggered.connect(self.save_project_as)
-        file_menu.addAction(save_project_as_action)
+        file_menu.addAction(self.new_project_action)
+        file_menu.addAction(self.open_project_action)
+        file_menu.addAction(self.save_project_action)
+        file_menu.addAction(self.save_project_as_action)
 
         file_menu.addSeparator()
-        add_pdf = QAction("Añadir PDF", self)
-        add_pdf.setShortcut(QKeySequence("Ctrl+Alt+O"))
-        add_pdf.triggered.connect(self.add_pdfs)
-        file_menu.addAction(add_pdf)
-
-        export = QAction("Exportar PDF", self)
-        export.setShortcut(QKeySequence("Ctrl+Shift+E"))
-        export.triggered.connect(self.export_pdf)
-        file_menu.addAction(export)
+        file_menu.addAction(self.add_pdf_action)
+        file_menu.addAction(self.export_pdf_action)
 
         file_menu.addSeparator()
         exit_action = QAction("Salir", self)
@@ -289,15 +556,8 @@ class MainWindow(QMainWindow):
 
         self.page_menu = self.menuBar().addMenu("Página")
         page_menu = self.page_menu
-        rotate_left = QAction("Rotar izquierda", self)
-        rotate_left.setShortcut(QKeySequence("Ctrl+Shift+L"))
-        rotate_left.triggered.connect(lambda: self.rotate_selected_pages(-90))
-        page_menu.addAction(rotate_left)
-
-        rotate_right = QAction("Rotar derecha", self)
-        rotate_right.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        rotate_right.triggered.connect(lambda: self.rotate_selected_pages(90))
-        page_menu.addAction(rotate_right)
+        page_menu.addAction(self.rotate_left_action)
+        page_menu.addAction(self.rotate_right_action)
 
     def new_project(self) -> None:
         if self.is_dirty and not self._confirm_discard_changes():
@@ -320,7 +580,8 @@ class MainWindow(QMainWindow):
             created_at=utc_now(),
             modified_at=utc_now(),
         )
-        self.statusBar().showMessage("Proyecto nuevo", 4000)
+        self._update_document_ui()
+        self._show_temporary_status("Proyecto nuevo", 4000)
 
     def open_project(self) -> None:
         if self.is_dirty and not self._confirm_discard_changes():
@@ -333,6 +594,8 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self._show_temporary_status("Abriendo proyecto…", 3000)
+        QApplication.processEvents()
         try:
             project = load_project(path)
         except ProjectVersionError as exc:
@@ -369,7 +632,8 @@ class MainWindow(QMainWindow):
             created_at=project.created_at,
             modified_at=project.modified_at,
         )
-        self.statusBar().showMessage(
+        self._update_document_ui()
+        self._show_temporary_status(
             f"Proyecto abierto: {project.source_project_path}",
             7000,
         )
@@ -395,6 +659,8 @@ class MainWindow(QMainWindow):
         self.save_current_overlay_positions()
         modified_at = utc_now()
         project_name = Path(path).stem or "Proyecto"
+        self._show_temporary_status("Guardando proyecto…", 3000)
+        QApplication.processEvents()
         try:
             saved_path = save_project(
                 path,
@@ -419,7 +685,7 @@ class MainWindow(QMainWindow):
         self.project_modified_at = modified_at
         self._mark_project_saved_state()
         self.update_window_title()
-        self.statusBar().showMessage(f"Proyecto guardado: {saved_path}", 7000)
+        self._show_temporary_status("Proyecto guardado", 5000)
         return True
 
     def _replace_document(
@@ -467,11 +733,10 @@ class MainWindow(QMainWindow):
             first_item = self.page_list.item(0)
             first_item.setSelected(True)
             self.load_page_into_preview(page_order[0])
-        else:
-            self.statusBar().showMessage("Proyecto vacío")
         self._mark_project_saved_state()
         self.refresh_thumbnail_layout()
         self.update_window_title()
+        self._update_document_ui()
 
     def _build_undo_shortcuts(self) -> None:
         self.redo_shift_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
@@ -479,24 +744,154 @@ class MainWindow(QMainWindow):
         self.redo_shift_shortcut.activated.connect(self.undo_stack.redo)
 
     def _apply_style(self) -> None:
+        colors = UI_COLORS
         self.setStyleSheet(
-            """
-            QMainWindow, QWidget { background: #202329; color: #edf0f5; }
-            QMenuBar { background: #17191d; color: #edf0f5; }
-            QMenuBar::item:selected, QMenu::item:selected { background: #2f80ed; }
-            QMenu { background: #202329; border: 1px solid #343942; }
-            QToolBar { background: #17191d; border: 0; spacing: 5px; padding: 6px; }
-            QToolButton { background: #2a2e35; color: #f5f7fa; border: 1px solid #3a404a; border-radius: 6px; padding: 8px 12px; }
-            QToolButton:hover { background: #343a44; border-color: #5aa9ff; }
-            QToolButton:pressed { background: #2f80ed; }
-            QListWidget { background: #17191d; border: 1px solid #343942; border-radius: 8px; padding: 8px; }
-            QListWidget::item { color: #e8ebef; border: 1px solid transparent; border-radius: 7px; padding: 5px; }
-            QListWidget::item:selected { background: #28374d; border: 1px solid #5aa9ff; }
-            QListWidget::item:hover { background: #242932; }
-            QGraphicsView { border: 1px solid #343942; border-radius: 8px; }
-            QLabel#sectionTitle { font-size: 14px; font-weight: 700; color: #8fc3ff; letter-spacing: 1px; }
-            QLabel#helpText { color: #aeb6c2; padding: 2px 4px 6px 4px; }
-            QStatusBar { background: #17191d; color: #b7bec8; }
+            f"""
+            QMainWindow {{ background: {colors['window']}; color: {colors['text']}; }}
+            QWidget {{ color: {colors['text']}; }}
+            QWidget#pagePanel, QWidget#workspacePanel {{
+                background: {colors['panel']};
+            }}
+            QMenuBar {{
+                background: {colors['window']};
+                color: {colors['text']};
+                padding: 5px 8px;
+                spacing: 4px;
+            }}
+            QMenuBar::item {{ padding: 7px 11px; border-radius: 5px; }}
+            QMenuBar::item:selected, QMenu::item:selected {{
+                background: {colors['surface_hover']};
+            }}
+            QMenu {{
+                background: {colors['panel']};
+                border: 1px solid {colors['border']};
+                padding: 6px;
+            }}
+            QMenu::item {{ padding: 7px 28px 7px 12px; border-radius: 4px; }}
+            QToolBar#mainToolbar {{
+                background: {colors['window']};
+                border: 0;
+                border-top: 1px solid {colors['border']};
+                border-bottom: 1px solid {colors['border']};
+                spacing: 4px;
+                padding: 7px 10px;
+            }}
+            QToolBar::separator {{
+                background: {colors['border']};
+                width: 1px;
+                margin: 7px 6px;
+            }}
+            QToolButton {{
+                background: {colors['surface']};
+                color: {colors['text']};
+                font-size: 11px;
+                border: 1px solid {colors['border']};
+                border-radius: 6px;
+                padding: 5px 7px;
+            }}
+            QToolButton:hover {{
+                background: {colors['surface_hover']};
+                border-color: {colors['accent']};
+            }}
+            QToolButton:pressed {{ background: {colors['accent']}; }}
+            QToolButton:focus {{ border: 1px solid {colors['accent_hover']}; }}
+            QToolButton:disabled {{
+                background: #23272e;
+                color: #69717d;
+                border-color: #303640;
+            }}
+            QToolButton[role="primary"] {{
+                background: {colors['accent']};
+                border-color: {colors['accent_hover']};
+                font-weight: 700;
+            }}
+            QToolButton[role="primary"]:hover {{ background: {colors['accent_hover']}; }}
+            QToolButton[role="secondary"] {{
+                background: #303844;
+                border-color: #596678;
+                font-weight: 600;
+            }}
+            QToolButton[role="destructive"]:hover {{
+                background: #43332f;
+                border-color: {colors['warning']};
+            }}
+            QStackedWidget#pageListStack, QStackedWidget#previewStack {{
+                background: transparent;
+                border: 0;
+            }}
+            QListWidget {{
+                background: {colors['window']};
+                border: 1px solid {colors['border']};
+                border-radius: 8px;
+                padding: 8px;
+            }}
+            QListWidget::item {{
+                color: #e8ebef;
+                border: 1px solid transparent;
+                border-radius: 7px;
+                padding: 5px;
+            }}
+            QListWidget::item:selected {{
+                background: #293c56;
+                border: 1px solid {colors['accent']};
+            }}
+            QListWidget::item:hover {{ background: #252b33; }}
+            QWidget#emptyPages, QWidget#welcomePage {{
+                background: {colors['window']};
+                border: 1px solid {colors['border']};
+                border-radius: 9px;
+            }}
+            QFrame#previewFrame {{
+                background: #15181d;
+                border: 1px solid {colors['border']};
+                border-radius: 9px;
+            }}
+            QGraphicsView {{
+                background: #15181d;
+                border: 0;
+                border-radius: 6px;
+            }}
+            QLabel#sectionTitle {{
+                font-size: 13px;
+                font-weight: 700;
+                color: #a9c9ef;
+                letter-spacing: 1px;
+            }}
+            QLabel#pageCount, QLabel#helpText,
+            QLabel#emptyPagesText, QLabel#welcomeText {{
+                color: {colors['muted']};
+            }}
+            QLabel#pageCount {{ font-size: 12px; }}
+            QLabel#helpText {{ font-size: 12px; padding: 0 4px 3px 4px; }}
+            QLabel#emptyPagesTitle {{ font-size: 14px; font-weight: 600; }}
+            QLabel#welcomeTitle {{ font-size: 26px; font-weight: 700; }}
+            QLabel#welcomeText {{ font-size: 14px; }}
+            QPushButton[role="welcome"] {{
+                background: {colors['surface']};
+                border: 1px solid {colors['border']};
+                border-radius: 7px;
+                padding: 8px 14px;
+            }}
+            QPushButton[role="welcome"]:hover {{
+                background: {colors['surface_hover']};
+                border-color: {colors['accent']};
+            }}
+            QPushButton[role="welcome"]:focus {{ border-color: {colors['accent_hover']}; }}
+            QPushButton[role="link"] {{
+                background: transparent;
+                border: 0;
+                color: #85b8f0;
+                padding: 6px 10px;
+                text-decoration: underline;
+            }}
+            QPushButton[role="link"]:hover {{ color: #b0d2f5; }}
+            QSplitter::handle {{ background: {colors['border']}; }}
+            QStatusBar {{
+                background: {colors['window']};
+                color: {colors['muted']};
+                border-top: 1px solid {colors['border']};
+                padding: 3px 10px;
+            }}
             """
         )
 
@@ -520,6 +915,7 @@ class MainWindow(QMainWindow):
             return
         self.undo_stack.push(ReorderPagesCommand(self, old_order, new_order, skip_first_redo=True))
         self.refresh_thumbnail_layout()
+        self._update_document_ui()
 
     def _apply_page_order(self, order: List[str]) -> None:
         current_order = self.ordered_page_ids()
@@ -563,6 +959,7 @@ class MainWindow(QMainWindow):
             self.scene.clear()
             self.overlay_items.clear()
         self.refresh_thumbnail_layout()
+        self._update_document_ui()
 
     def _insert_page_models(self, models: List[PageModel], command_text: str = "Agregar página") -> None:
         if not models:
@@ -590,7 +987,11 @@ class MainWindow(QMainWindow):
         if current:
             current.setSelected(True)
         self.refresh_thumbnail_layout()
-        self.statusBar().showMessage(f"{len(models)} página(s) añadida(s)", 4000)
+        self._update_document_ui()
+        self._show_temporary_status(
+            f"{len(models)} página(s) añadida(s)",
+            4000,
+        )
 
     def _remove_page_ids_direct(self, page_ids: List[str], select_row: Optional[int] = None) -> None:
         ids = set(page_ids)
@@ -614,9 +1015,8 @@ class MainWindow(QMainWindow):
             if target is None:
                 target = min(min(removed_rows) if removed_rows else 0, self.page_list.count() - 1)
             self.page_list.setCurrentRow(min(max(target, 0), self.page_list.count() - 1))
-        else:
-            self.statusBar().showMessage("Añade PDF o imágenes para comenzar")
         self.refresh_thumbnail_layout()
+        self._update_document_ui()
 
     def add_pdfs(self) -> None:
         document_was_empty = len(self.pages) == 0 and self.page_list.count() == 0
@@ -770,7 +1170,10 @@ class MainWindow(QMainWindow):
             asset_id=asset.id,
         )
         self.undo_stack.push(InsertOverlayCommand(self, page.id, overlay))
-        self.statusBar().showMessage("Imagen insertada: arrástrala y redimensiónala", 4500)
+        self._show_temporary_status(
+            "Imagen insertada: arrástrala y redimensiónala",
+            4500,
+        )
 
     def delete_selected_overlays(self) -> None:
         if not self.current_page_id:
@@ -834,7 +1237,10 @@ class MainWindow(QMainWindow):
 
         direction = "izquierda" if delta < 0 else "derecha"
         self.refresh_thumbnail_layout()
-        self.statusBar().showMessage(f"{len(selected_ids)} página(s) rotada(s) a la {direction}", 4000)
+        self._show_temporary_status(
+            f"{len(selected_ids)} página(s) rotada(s) a la {direction}",
+            4000,
+        )
 
     def on_page_changed(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem]) -> None:
         if self._changing_selection:
@@ -843,9 +1249,11 @@ class MainWindow(QMainWindow):
         if current is None:
             self.current_page_id = None
             self.scene.clear()
+            self._update_document_ui()
             return
         page_id = current.data(Qt.ItemDataRole.UserRole)
         self.load_page_into_preview(page_id)
+        self._update_document_ui()
 
     def save_current_overlay_positions(self) -> None:
         if not self.current_page_id or self.current_page_id not in self.pages:
@@ -977,7 +1385,7 @@ class MainWindow(QMainWindow):
                     else overlay.path
                 )
             except AssetManagerError as exc:
-                self.statusBar().showMessage(str(exc), 7000)
+                self._show_temporary_status(str(exc), 7000)
                 continue
             pixmap = QPixmap(overlay_path)
             if pixmap.isNull():
@@ -996,7 +1404,7 @@ class MainWindow(QMainWindow):
 
         self.preview.resetTransform()
         self.preview.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self.statusBar().showMessage(page.label.replace("\n", " - "))
+        self.update_status_bar()
 
     def render_page_pixmap(self, page: PageModel, target_long_edge: int = 900, include_overlays: bool = True) -> QPixmap:
         try:
@@ -1007,7 +1415,7 @@ class MainWindow(QMainWindow):
                 self.asset_manager.resolve_path,
             )
         except AssetManagerError as exc:
-            self.statusBar().showMessage(str(exc), 7000)
+            self._show_temporary_status(str(exc), 7000)
             placeholder = QPixmap(480, 640)
             placeholder.fill(QColor("#ffffff"))
             return placeholder
@@ -1086,6 +1494,19 @@ class MainWindow(QMainWindow):
     def _fit_rect(page_w: float, page_h: float, image_w: int, image_h: int, margin: float = 20.0) -> fitz.Rect:
         return fit_rect(page_w, page_h, image_w, image_h, margin)
 
+    def _update_export_progress(
+        self,
+        progress: QProgressDialog,
+        value: int,
+        total: int,
+    ) -> None:
+        self._has_temporary_status = True
+        progress.setValue(value)
+        self.statusBar().showMessage(
+            f"Exportando página {value} de {total}…"
+        )
+        QApplication.processEvents()
+
     def export_pdf(self) -> None:
         if self.page_list.count() == 0:
             QMessageBox.information(self, APP_NAME, "Todavía no hay páginas para exportar.")
@@ -1100,23 +1521,28 @@ class MainWindow(QMainWindow):
         progress = QProgressDialog("Creando PDF...", "Cancelar", 0, self.page_list.count(), self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
+        total_pages = self.page_list.count()
+        self._status_generation += 1
 
         try:
             completed = export_pdf_document(
                 self.pages,
                 self.ordered_page_ids(),
                 path,
-                lambda value: (
-                    progress.setValue(value),
-                    QApplication.processEvents(),
+                lambda value: self._update_export_progress(
+                    progress,
+                    value,
+                    total_pages,
                 ),
                 progress.wasCanceled,
                 self.asset_manager.resolve_path,
             )
             progress.close()
             if not completed:
+                self._has_temporary_status = False
+                self.update_status_bar(force=True)
                 return
-            self.statusBar().showMessage(f"PDF exportado: {path}", 7000)
+            self._show_temporary_status(f"PDF exportado: {path}", 7000)
             QMessageBox.information(
                 self,
                 APP_NAME,
@@ -1124,6 +1550,8 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             progress.close()
+            self._has_temporary_status = False
+            self.update_status_bar(force=True)
             QMessageBox.critical(
                 self,
                 APP_NAME,
