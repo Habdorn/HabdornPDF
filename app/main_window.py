@@ -15,7 +15,7 @@ from app.constants import (
     REPORT_PROBLEM_URL,
     UI_COLORS,
 )
-from app.dialogs import (
+from dialogs import (
     AboutDialog,
     HelpDialog,
     PreferencesDialog,

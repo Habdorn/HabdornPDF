@@ -4,7 +4,7 @@
 > **Tipo:** aplicación de escritorio local para Windows
 > **Estado del documento:** auditoría técnica del repositorio al 11 de julio de 2026
 > **Rama y revisión inspeccionadas:** `main`, commit `c2a541e` (`Complete stable undo and redo history`)
-> **Fuente de verdad:** código modular bajo `app/`, `models/`, `commands/`, `widgets/` y `services/`; `main.py`; dependencias; scripts; reglas e historial Git.
+> **Fuente de verdad:** código modular bajo `app/`, `dialogs/`, `models/`, `commands/`, `widgets/` y `services/`; `main.py`; dependencias; scripts; reglas e historial Git.
 > **Importante:** este documento diferencia entre funcionalidad comprobable en el código, limitaciones explícitas y riesgos inferidos que todavía requieren una prueba manual para considerarse bugs reproducidos.
 
 ## 1. Resumen del proyecto
@@ -120,7 +120,7 @@ La aplicación es un **programa de escritorio dirigido por eventos con separaci�
 
 ### Organización de carpetas
 
-El código se organiza en `app/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, archivos `.ui` ni configuración de CI. Los SVG estáticos de la interfaz viven bajo `resources/`; los assets importados por el usuario se crean fuera del repositorio, dentro de workspaces administrados.
+El código se organiza en `app/`, `dialogs/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, archivos `.ui` ni configuración de CI. Los SVG estáticos de la interfaz viven bajo `resources/`; los assets importados por el usuario se crean fuera del repositorio, dentro de workspaces administrados.
 
 ### Responsabilidades por componente
 
@@ -227,9 +227,17 @@ HabdornPDF/
 ├── app/
 │   ├── __init__.py
 │   ├── constants.py            # Nombre, A4 y formatos de imagen declarados.
-│   ├── dialogs.py              # Ayuda, información y Preferencias base.
 │   ├── lucide_resources.py     # Recursos Qt generados para incluir los SVG.
 │   └── main_window.py          # UI, estado y coordinación del flujo de usuario.
+├── dialogs/
+│   ├── __init__.py             # API pública de diálogos y helpers.
+│   ├── common.py               # Estilo, clase base y enlaces compartidos.
+│   ├── help_dialog.py          # Primeros pasos y accesos de ayuda.
+│   ├── shortcuts_dialog.py     # Tabla de atajos reales.
+│   ├── whats_new_dialog.py     # Novedades de la versión de desarrollo.
+│   ├── about_dialog.py         # Información de producto y créditos.
+│   ├── third_party_dialog.py   # Carga y visor de avisos de terceros.
+│   └── preferences_dialog.py   # Preferencias base sin persistencia.
 ├── models/
 │   ├── __init__.py
 │   ├── asset_record.py         # Metadatos inmutables de cada recurso interno.
@@ -496,6 +504,8 @@ La toolbar evolucionó a una mini-ribbon compacta con icono arriba y texto abajo
 La barra de menús incluye `Archivo`, `Editar`, `Página` y `Ayuda`. El menú Ayuda ofrece primeros pasos, una tabla de atajos reales, novedades de la versión de desarrollo, sitio web, reporte de problemas y Acerca de. Los enlaces externos solo se abren por acción explícita mediante `QDesktopServices`; no se realizan solicitudes de red desde Python. Como no hay un correo o tracker público confirmado, `Reportar un problema` usa `https://habdorn.com` como fallback documentado.
 
 `Editar → Preferencias…` abre un diálogo base con secciones General, Idioma y Apariencia. Español y el tema Oscuro se muestran como estado actual, pero no son editables ni se persisten todavía. Los avisos de terceros se incorporan en `app/lucide_resources.py` desde `THIRD_PARTY_NOTICES.md` y se leen mediante `:/notices/THIRD_PARTY_NOTICES.md`, por lo que no dependen de rutas locales al ejecutar con PyInstaller.
+
+Los diálogos se organizan como paquete independiente `dialogs/`: cada ventana reside en un módulo propio, mientras `common.py` concentra únicamente estilo, clase base, botón de cierre y apertura controlada de enlaces. `dialogs/__init__.py` mantiene una API pública simple para `MainWindow`. El paquete no importa `MainWindow` ni contiene infraestructura de traducción; la separación prepara una futura internacionalización sin afirmar que ya exista.
 
 ### Edición no destructiva con assets administrados
 
@@ -896,6 +906,7 @@ Basado en el historial Git disponible:
 - En `feature/ui-phase-1`, limpieza visual conservadora: toolbar agrupada, pantalla inicial, estados vacíos, contador, status contextual, espaciado y jerarquía de acciones.
 - En `feature/ui-ribbon-lucide`, cambio visual pendiente de validación manual: mini-ribbon de cinco grupos, trece SVG Lucide embebidos como recursos Qt, acción principal de exportación y estilos neutrales para eliminaciones.
 - En `feature/help-and-preferences`, primera etapa pendiente de validación manual: menú Ayuda, diálogos informativos, enlaces explícitos, avisos de terceros embebidos y Preferencias sin controles ficticios ni persistencia.
+- En `feature/modular-dialogs`, refactorización estructural pendiente de validación manual: `app/dialogs.py` sustituido por un paquete de módulos pequeños con API pública estable, sin cambios visibles ni internacionalización.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
