@@ -16,7 +16,7 @@ class InsertOverlayCommand(QUndoCommand):
         page_id: str,
         overlay: OverlayModel,
     ):
-        super().__init__("Insertar imagen")
+        super().__init__(window.tr("command.insert_image"))
         self.window = window
         self.page_id = page_id
         self.overlay = deepcopy(overlay)
@@ -38,7 +38,7 @@ class DeleteOverlaysCommand(QUndoCommand):
         page_id: str,
         overlays: List[Tuple[int, OverlayModel]],
     ):
-        super().__init__("Eliminar imagen")
+        super().__init__(window.tr("command.delete_image"))
         self.window = window
         self.page_id = page_id
         self.overlays = [

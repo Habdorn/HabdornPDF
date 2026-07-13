@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/i18n">
+    <file alias="es.json">../i18n/locales/es.json</file>
+    <file alias="en.json">../i18n/locales/en.json</file>
+  </qresource>
+</RCC>

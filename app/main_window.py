@@ -23,6 +23,7 @@ from dialogs import (
     WhatsNewDialog,
     open_external_url,
 )
+from i18n import Translator, load_saved_locale
 from commands.overlay_commands import (
     DeleteOverlaysCommand,
     InsertOverlayCommand,
@@ -58,7 +59,7 @@ from services.project_service import (
 from widgets.overlay_graphics_item import OverlayGraphicsItem
 from widgets.page_list_widget import PageListWidget
 from widgets.preview_view import PreviewView
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QRectF, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -97,8 +98,17 @@ from PySide6.QtWidgets import (
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, asset_manager: Optional[AssetManager] = None):
+    def __init__(
+        self,
+        asset_manager: Optional[AssetManager] = None,
+        translator: Optional[Translator] = None,
+        settings: Optional[QSettings] = None,
+    ):
         super().__init__()
+        self.settings = settings or QSettings()
+        self.translator = translator or Translator(
+            load_saved_locale(self.settings)
+        )
         self.setWindowTitle(APP_NAME)
         self.resize(1420, 860)
         self.setMinimumSize(980, 650)
@@ -161,9 +171,9 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(2, 0, 2, 0)
         header_layout.setSpacing(8)
-        title = QLabel("PÁGINAS")
+        title = QLabel(self.tr("pages.section"))
         title.setObjectName("sectionTitle")
-        self.page_count_label = QLabel("0 páginas")
+        self.page_count_label = QLabel(self.page_count_text(0))
         self.page_count_label.setObjectName("pageCount")
         header_layout.addWidget(title)
         header_layout.addStretch(1)
@@ -182,12 +192,12 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(12, 18, 16, 14)
         right_layout.setSpacing(10)
         self.help_label = QLabel(
-            "Arrastra las miniaturas para reordenar · Ctrl + rueda para hacer zoom"
+            self.tr("workspace.help")
         )
         self.help_label.setWordWrap(True)
         self.help_label.setObjectName("helpText")
         self.help_label.setToolTip(
-            "Selecciona una imagen insertada para moverla, redimensionarla o rotarla."
+            self.tr("workspace.help_tooltip")
         )
         right_layout.addWidget(self.help_label)
 
@@ -217,18 +227,41 @@ class MainWindow(QMainWindow):
         self.update_window_title()
         self._update_document_ui()
 
+    def tr(self, key: str, **values: object) -> str:
+        return self.translator.get(key, **values)
+
+    def page_count_text(self, count: int) -> str:
+        return self.translator.plural(
+            "page_count.one",
+            "page_count.other",
+            count,
+        )
+
+    def _display_page_label(self, model: PageModel) -> str:
+        if model.kind == "pdf":
+            name = model.label.rsplit("\n", 1)[0]
+            return self.tr(
+                "page_label.pdf",
+                name=name,
+                page=(model.page_index or 0) + 1,
+            )
+        if model.kind == "image":
+            name = model.label.split("\n", 1)[-1]
+            return self.tr("page_label.image", name=name)
+        if model.kind == "blank":
+            return self.tr("page_label.blank")
+        return model.label
+
     def _build_empty_pages_widget(self) -> QWidget:
         widget = QWidget()
         widget.setObjectName("emptyPages")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.addStretch(1)
-        title = QLabel("Todavía no hay páginas")
+        title = QLabel(self.tr("empty.pages_title"))
         title.setObjectName("emptyPagesTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        description = QLabel(
-            "Añade un PDF, una imagen\no una página en blanco."
-        )
+        description = QLabel(self.tr("empty.pages_text"))
         description.setObjectName("emptyPagesText")
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
@@ -244,12 +277,10 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(40, 40, 40, 40)
         layout.addStretch(2)
 
-        title = QLabel("Crea un documento")
+        title = QLabel(self.tr("welcome.title"))
         title.setObjectName("welcomeTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        description = QLabel(
-            "Añade un PDF, una imagen o una página en blanco\npara comenzar."
-        )
+        description = QLabel(self.tr("welcome.text"))
         description.setObjectName("welcomeText")
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
@@ -261,9 +292,9 @@ class MainWindow(QMainWindow):
         buttons.setSpacing(10)
         buttons.addStretch(1)
         for text, action in (
-            ("Añadir PDF", self.add_pdf_action),
-            ("Añadir imagen", self.add_image_page_action),
-            ("Página en blanco", self.add_blank_page_action),
+            (self.tr("welcome.add_pdf"), self.add_pdf_action),
+            (self.tr("welcome.add_image"), self.add_image_page_action),
+            (self.tr("welcome.blank_page"), self.add_blank_page_action),
         ):
             button = QPushButton(text)
             button.setProperty("role", "welcome")
@@ -276,7 +307,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
         layout.addSpacing(14)
 
-        open_project = QPushButton("Abrir proyecto .hpdf")
+        open_project = QPushButton(self.tr("welcome.open_project"))
         open_project.setProperty("role", "link")
         open_project.setCursor(Qt.CursorShape.PointingHandCursor)
         open_project.clicked.connect(
@@ -288,8 +319,7 @@ class MainWindow(QMainWindow):
 
     def _update_document_ui(self) -> None:
         count = self.page_list.count()
-        label = "1 página" if count == 1 else f"{count} páginas"
-        self.page_count_label.setText(label)
+        self.page_count_label.setText(self.page_count_text(count))
         has_pages = count > 0
         self.page_list_stack.setCurrentIndex(1 if has_pages else 0)
         self.preview_stack.setCurrentIndex(1 if has_pages else 0)
@@ -335,23 +365,31 @@ class MainWindow(QMainWindow):
             return
         count = self.page_list.count()
         if count == 0:
-            message = "Cambios sin guardar" if self.is_dirty else "Listo"
+            message = (
+                self.tr("status.unsaved")
+                if self.is_dirty
+                else self.tr("status.ready")
+            )
         else:
             current_row = self.page_list.currentRow()
             selection = (
-                f"Página {current_row + 1} seleccionada"
+                self.tr("status.page_selected", page=current_row + 1)
                 if current_row >= 0
-                else "Sin página seleccionada"
+                else self.tr("status.no_selection")
             )
             document_state = (
-                "Cambios sin guardar"
+                self.tr("status.unsaved")
                 if self.is_dirty
-                else "Proyecto guardado"
+                else self.tr("status.project_saved")
                 if self.current_project_path
-                else "Listo"
+                else self.tr("status.ready")
             )
-            count_text = "1 página" if count == 1 else f"{count} páginas"
-            message = f"{document_state} · {count_text} · {selection}"
+            message = self.tr(
+                "status.summary",
+                state=document_state,
+                count=self.page_count_text(count),
+                selection=selection,
+            )
         self.statusBar().showMessage(message)
 
     def set_dirty(self, dirty: bool = True) -> None:
@@ -366,9 +404,16 @@ class MainWindow(QMainWindow):
         project_name = (
             Path(self.current_project_path).name
             if self.current_project_path
-            else "Sin título"
+            else self.tr("app.untitled")
         )
-        self.setWindowTitle(f"{project_name}{suffix} — {APP_NAME}")
+        self.setWindowTitle(
+            self.tr(
+                "title.window",
+                project=project_name,
+                dirty=suffix,
+                app=APP_NAME,
+            )
+        )
 
     def _update_dirty_state(self, *args) -> None:
         undo_state_matches = (
@@ -391,93 +436,115 @@ class MainWindow(QMainWindow):
         self._update_dirty_state()
 
     def _create_actions(self) -> None:
-        self.undo_action = self.undo_stack.createUndoAction(self, "Deshacer")
+        self.undo_action = self.undo_stack.createUndoAction(
+            self,
+            self.tr("action.undo"),
+        )
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        self.redo_action = self.undo_stack.createRedoAction(self, "Rehacer")
+        self.redo_action = self.undo_stack.createRedoAction(
+            self,
+            self.tr("action.redo"),
+        )
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
 
-        self.new_project_action = QAction("Nuevo proyecto", self)
+        self.new_project_action = QAction(self.tr("action.new_project"), self)
         self.new_project_action.setShortcut(QKeySequence("Ctrl+N"))
         self.new_project_action.triggered.connect(self.new_project)
 
-        self.open_project_action = QAction("Abrir proyecto…", self)
+        self.open_project_action = QAction(self.tr("action.open_project"), self)
         self.open_project_action.setShortcut(QKeySequence("Ctrl+O"))
         self.open_project_action.triggered.connect(self.open_project)
 
-        self.save_project_action = QAction("Guardar proyecto", self)
+        self.save_project_action = QAction(self.tr("action.save_project"), self)
         self.save_project_action.setShortcut(QKeySequence("Ctrl+S"))
         self.save_project_action.triggered.connect(self.save_project)
 
-        self.save_project_as_action = QAction("Guardar proyecto como…", self)
+        self.save_project_as_action = QAction(
+            self.tr("action.save_project_as"),
+            self,
+        )
         self.save_project_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.save_project_as_action.triggered.connect(self.save_project_as)
 
-        self.add_pdf_action = QAction("Añadir PDF", self)
+        self.add_pdf_action = QAction(self.tr("action.add_pdf"), self)
         self.add_pdf_action.setShortcut(QKeySequence("Ctrl+Alt+O"))
         self.add_pdf_action.triggered.connect(self.add_pdfs)
-        self.add_pdf_action.setToolTip("Añadir uno o varios archivos PDF")
+        self.add_pdf_action.setToolTip(self.tr("action.tooltip.add_pdf"))
 
-        self.add_image_page_action = QAction("+ Imagen como página", self)
+        self.add_image_page_action = QAction(
+            self.tr("action.add_image_page"),
+            self,
+        )
         self.add_image_page_action.triggered.connect(self.add_images_as_pages)
-        self.add_image_page_action.setToolTip("Añadir imágenes como páginas A4")
+        self.add_image_page_action.setToolTip(
+            self.tr("action.tooltip.add_image_page")
+        )
 
-        self.add_blank_page_action = QAction("+ Página en blanco", self)
+        self.add_blank_page_action = QAction(
+            self.tr("action.add_blank_page"),
+            self,
+        )
         self.add_blank_page_action.triggered.connect(self.add_blank_page)
 
-        self.insert_image_action = QAction("Insertar imagen", self)
+        self.insert_image_action = QAction(self.tr("action.insert_image"), self)
         self.insert_image_action.triggered.connect(self.add_overlay_image)
 
-        self.rotate_left_action = QAction("Rotar izquierda", self)
+        self.rotate_left_action = QAction(self.tr("action.rotate_left"), self)
         self.rotate_left_action.setShortcut(QKeySequence("Ctrl+Shift+L"))
         self.rotate_left_action.triggered.connect(
             lambda: self.rotate_selected_pages(-90)
         )
 
-        self.rotate_right_action = QAction("Rotar derecha", self)
+        self.rotate_right_action = QAction(self.tr("action.rotate_right"), self)
         self.rotate_right_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
         self.rotate_right_action.triggered.connect(
             lambda: self.rotate_selected_pages(90)
         )
 
-        self.delete_image_action = QAction("Eliminar imagen", self)
+        self.delete_image_action = QAction(self.tr("action.delete_image"), self)
         self.delete_image_action.triggered.connect(self.delete_selected_overlays)
 
-        self.delete_page_action = QAction("Eliminar página", self)
+        self.delete_page_action = QAction(self.tr("action.delete_page"), self)
         self.delete_page_action.triggered.connect(self.delete_selected_pages)
 
-        self.export_pdf_action = QAction("Exportar PDF", self)
+        self.export_pdf_action = QAction(self.tr("action.export_pdf"), self)
         self.export_pdf_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
         self.export_pdf_action.triggered.connect(self.export_pdf)
 
-        self.preferences_action = QAction("Preferencias…", self)
+        self.preferences_action = QAction(self.tr("action.preferences"), self)
         self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         self.preferences_action.triggered.connect(self.show_preferences)
 
-        self.help_action = QAction("Ayuda de Habdorn PDF", self)
+        self.help_action = QAction(self.tr("action.help"), self)
         self.help_action.triggered.connect(self.show_help)
-        self.shortcuts_action = QAction("Atajos de teclado", self)
+        self.shortcuts_action = QAction(self.tr("action.shortcuts"), self)
         self.shortcuts_action.triggered.connect(self.show_shortcuts)
-        self.whats_new_action = QAction("Novedades", self)
+        self.whats_new_action = QAction(self.tr("action.whats_new"), self)
         self.whats_new_action.triggered.connect(self.show_whats_new)
-        self.website_action = QAction("Sitio web de Habdorn", self)
+        self.website_action = QAction(self.tr("action.website"), self)
         self.website_action.triggered.connect(
             lambda: open_external_url(
                 self,
                 APP_WEBSITE,
-                "el sitio web de Habdorn",
+                self.tr("link.website_description"),
+                self.translator,
             )
         )
-        self.report_problem_action = QAction("Reportar un problema", self)
+        self.report_problem_action = QAction(
+            self.tr("action.report_problem"),
+            self,
+        )
         self.report_problem_action.triggered.connect(
             lambda: open_external_url(
                 self,
                 REPORT_PROBLEM_URL,
-                "la página para reportar un problema",
+                self.tr("link.report_description"),
+                self.translator,
             )
         )
-        self.about_action = QAction("Acerca de Habdorn PDF", self)
+        self.about_action = QAction(self.tr("action.about"), self)
         self.about_action.triggered.connect(self.show_about)
 
         action_icons = {
@@ -499,7 +566,7 @@ class MainWindow(QMainWindow):
             action.setIcon(QIcon(f":/icons/lucide/{icon_name}.svg"))
 
     def _build_toolbar(self) -> None:
-        self.toolbar = QToolBar("Mini-ribbon")
+        self.toolbar = QToolBar(self.tr("ribbon.title"))
         self.toolbar.setObjectName("miniRibbon")
         self.toolbar.setMovable(False)
         self.toolbar.setFloatable(False)
@@ -508,28 +575,28 @@ class MainWindow(QMainWindow):
         self.addToolBar(self.toolbar)
         self._ribbon_buttons: Dict[QAction, QToolButton] = {}
         groups = (
-            ("Historial", (
-                (self.undo_action, "Deshacer", "normal"),
-                (self.redo_action, "Rehacer", "normal"),
+            (self.tr("ribbon.group.history"), (
+                (self.undo_action, self.tr("action.undo"), "normal"),
+                (self.redo_action, self.tr("action.redo"), "normal"),
             )),
-            ("Añadir", (
-                (self.add_pdf_action, "PDF", "normal"),
-                (self.add_image_page_action, "Imagen", "normal"),
-                (self.add_blank_page_action, "Página blanca", "normal"),
+            (self.tr("ribbon.group.add"), (
+                (self.add_pdf_action, self.tr("ribbon.add_pdf"), "normal"),
+                (self.add_image_page_action, self.tr("ribbon.add_image"), "normal"),
+                (self.add_blank_page_action, self.tr("ribbon.blank_page"), "normal"),
             )),
-            ("Contenido", (
-                (self.insert_image_action, "Insertar imagen", "normal"),
-                (self.delete_image_action, "Eliminar imagen", "destructive"),
+            (self.tr("ribbon.group.content"), (
+                (self.insert_image_action, self.tr("action.insert_image"), "normal"),
+                (self.delete_image_action, self.tr("action.delete_image"), "destructive"),
             )),
-            ("Página", (
-                (self.rotate_left_action, "Girar izq.", "normal"),
-                (self.rotate_right_action, "Girar der.", "normal"),
-                (self.delete_page_action, "Eliminar página", "destructive"),
+            (self.tr("ribbon.group.page"), (
+                (self.rotate_left_action, self.tr("ribbon.rotate_left"), "normal"),
+                (self.rotate_right_action, self.tr("ribbon.rotate_right"), "normal"),
+                (self.delete_page_action, self.tr("action.delete_page"), "destructive"),
             )),
-            ("Proyecto", (
-                (self.open_project_action, "Abrir proyecto", "normal"),
-                (self.save_project_action, "Guardar", "secondary"),
-                (self.export_pdf_action, "Exportar PDF", "primary"),
+            (self.tr("ribbon.group.project"), (
+                (self.open_project_action, self.tr("ribbon.open_project"), "normal"),
+                (self.save_project_action, self.tr("ribbon.save"), "secondary"),
+                (self.export_pdf_action, self.tr("action.export_pdf"), "primary"),
             )),
         )
         for index, (name, actions) in enumerate(groups):
@@ -537,8 +604,8 @@ class MainWindow(QMainWindow):
                 self.toolbar.addSeparator()
             self.toolbar.addWidget(self._build_ribbon_group(name, actions))
 
-        self.undo_action.changed.connect(self._queue_ribbon_history_sync)
-        self.redo_action.changed.connect(self._queue_ribbon_history_sync)
+        self.undo_action.changed.connect(self._sync_ribbon_history_buttons)
+        self.redo_action.changed.connect(self._sync_ribbon_history_buttons)
         self._sync_ribbon_history_buttons()
 
     def _build_ribbon_group(
@@ -580,21 +647,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         return group
 
-    def _queue_ribbon_history_sync(self) -> None:
-        QTimer.singleShot(0, self._sync_ribbon_history_buttons)
-
     def _sync_ribbon_history_buttons(self) -> None:
         undo_button = self._ribbon_buttons.get(self.undo_action)
         redo_button = self._ribbon_buttons.get(self.redo_action)
         if undo_button is not None:
-            undo_button.setText("Deshacer")
+            undo_button.setText(self.tr("action.undo"))
             undo_button.setToolTip(self.undo_action.text())
         if redo_button is not None:
-            redo_button.setText("Rehacer")
+            redo_button.setText(self.tr("action.redo"))
             redo_button.setToolTip(self.redo_action.text())
 
     def _build_menu(self) -> None:
-        self.file_menu = self.menuBar().addMenu("Archivo")
+        self.file_menu = self.menuBar().addMenu(self.tr("menu.file"))
         file_menu = self.file_menu
         file_menu.addAction(self.new_project_action)
         file_menu.addAction(self.open_project_action)
@@ -606,23 +670,23 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.export_pdf_action)
 
         file_menu.addSeparator()
-        exit_action = QAction("Salir", self)
+        exit_action = QAction(self.tr("action.exit"), self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        self.edit_menu = self.menuBar().addMenu("Editar")
+        self.edit_menu = self.menuBar().addMenu(self.tr("menu.edit"))
         edit_menu = self.edit_menu
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.preferences_action)
 
-        self.page_menu = self.menuBar().addMenu("Página")
+        self.page_menu = self.menuBar().addMenu(self.tr("menu.page"))
         page_menu = self.page_menu
         page_menu.addAction(self.rotate_left_action)
         page_menu.addAction(self.rotate_right_action)
 
-        self.help_menu = self.menuBar().addMenu("Ayuda")
+        self.help_menu = self.menuBar().addMenu(self.tr("menu.help"))
         help_menu = self.help_menu
         help_menu.addAction(self.help_action)
         help_menu.addAction(self.shortcuts_action)
@@ -634,19 +698,23 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self.about_action)
 
     def show_preferences(self) -> None:
-        PreferencesDialog(self).exec()
+        PreferencesDialog(
+            self,
+            self.translator,
+            self.settings,
+        ).exec()
 
     def show_help(self) -> None:
-        HelpDialog(self).exec()
+        HelpDialog(self, self.translator).exec()
 
     def show_shortcuts(self) -> None:
-        ShortcutsDialog(self).exec()
+        ShortcutsDialog(self, self.translator).exec()
 
     def show_whats_new(self) -> None:
-        WhatsNewDialog(self).exec()
+        WhatsNewDialog(self, self.translator).exec()
 
     def show_about(self) -> None:
-        AboutDialog(self).exec()
+        AboutDialog(self, self.translator).exec()
 
     def new_project(self) -> None:
         if self.is_dirty and not self._confirm_discard_changes():
@@ -657,7 +725,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 APP_NAME,
-                f"No se pudo crear un proyecto nuevo.\n\n{exc}",
+                self.tr("message.new_project_failed", error=exc),
             )
             return
         self._replace_document(
@@ -670,45 +738,49 @@ class MainWindow(QMainWindow):
             modified_at=utc_now(),
         )
         self._update_document_ui()
-        self._show_temporary_status("Proyecto nuevo", 4000)
+        self._show_temporary_status(self.tr("status.project_new"), 4000)
 
     def open_project(self) -> None:
         if self.is_dirty and not self._confirm_discard_changes():
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Abrir proyecto",
+            self.tr("file.open_project_title"),
             "",
-            "Proyecto Habdorn PDF (*.hpdf)",
+            self.tr("filter.project"),
         )
         if not path:
             return
-        self._show_temporary_status("Abriendo proyecto…", 3000)
+        self._show_temporary_status(self.tr("status.project_opening"), 3000)
         QApplication.processEvents()
         try:
             project = load_project(path)
-        except ProjectVersionError as exc:
-            QMessageBox.critical(self, APP_NAME, str(exc))
+        except ProjectVersionError:
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                self.tr("message.project_version_unsupported"),
+            )
             return
         except ProjectAssetError as exc:
             QMessageBox.critical(
                 self,
                 APP_NAME,
-                f"Falta un recurso interno necesario para abrir el proyecto.\n\n{exc}",
+                self.tr("message.project_asset_missing", error=exc),
             )
             return
         except ProjectFormatError as exc:
             QMessageBox.critical(
                 self,
                 APP_NAME,
-                f"El archivo de proyecto está dañado o no es válido.\n\n{exc}",
+                self.tr("message.project_invalid", error=exc),
             )
             return
         except ProjectError as exc:
             QMessageBox.critical(
                 self,
                 APP_NAME,
-                f"No se pudo abrir el proyecto.\n\n{exc}",
+                self.tr("message.project_open_failed", error=exc),
             )
             return
 
@@ -723,7 +795,10 @@ class MainWindow(QMainWindow):
         )
         self._update_document_ui()
         self._show_temporary_status(
-            f"Proyecto abierto: {project.source_project_path}",
+            self.tr(
+                "status.project_opened",
+                path=project.source_project_path,
+            ),
             7000,
         )
 
@@ -733,12 +808,12 @@ class MainWindow(QMainWindow):
         return self._save_project_to(self.current_project_path)
 
     def save_project_as(self) -> bool:
-        suggested = self.current_project_path or "Proyecto.hpdf"
+        suggested = self.current_project_path or self.tr("file.default_project")
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Guardar proyecto como",
+            self.tr("file.save_project_as_title"),
             suggested,
-            "Proyecto Habdorn PDF (*.hpdf)",
+            self.tr("filter.project"),
         )
         if not path:
             return False
@@ -747,8 +822,8 @@ class MainWindow(QMainWindow):
     def _save_project_to(self, path: str) -> bool:
         self.save_current_overlay_positions()
         modified_at = utc_now()
-        project_name = Path(path).stem or "Proyecto"
-        self._show_temporary_status("Guardando proyecto…", 3000)
+        project_name = Path(path).stem or self.tr("file.default_project_name")
+        self._show_temporary_status(self.tr("status.project_saving"), 3000)
         QApplication.processEvents()
         try:
             saved_path = save_project(
@@ -767,14 +842,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 APP_NAME,
-                f"No se pudo guardar el proyecto.\n\n{exc}",
+                self.tr("message.project_save_failed", error=exc),
             )
             return False
         self.current_project_path = saved_path
         self.project_modified_at = modified_at
         self._mark_project_saved_state()
         self.update_window_title()
-        self._show_temporary_status("Proyecto guardado", 5000)
+        self._show_temporary_status(
+            self.tr("status.project_saved_success"),
+            5000,
+        )
         return True
 
     def _replace_document(
@@ -805,10 +883,11 @@ class MainWindow(QMainWindow):
             for page_id in page_order:
                 model = deepcopy(pages[page_id])
                 self.pages[page_id] = model
-                item = QListWidgetItem(model.label)
+                display_label = self._display_page_label(model)
+                item = QListWidgetItem(display_label)
                 item.setData(Qt.ItemDataRole.UserRole, model.id)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
-                item.setToolTip(model.label)
+                item.setToolTip(display_label)
                 self.page_list.addItem(item)
                 self._set_thumbnail(item, model)
         finally:
@@ -1063,9 +1142,14 @@ class MainWindow(QMainWindow):
         self.refresh_thumbnail_layout()
         self._update_document_ui()
 
-    def _insert_page_models(self, models: List[PageModel], command_text: str = "Agregar página") -> None:
+    def _insert_page_models(
+        self,
+        models: List[PageModel],
+        command_text: Optional[str] = None,
+    ) -> None:
         if not models:
             return
+        command_text = command_text or self.tr("command.add_page")
         current_row = self.page_list.currentRow()
         insert_at = current_row + 1 if current_row >= 0 else self.page_list.count()
         self.undo_stack.push(InsertPagesCommand(self, models, insert_at, command_text))
@@ -1077,10 +1161,11 @@ class MainWindow(QMainWindow):
         for offset, model in enumerate(models):
             stored_model = deepcopy(model)
             self.pages[stored_model.id] = stored_model
-            item = QListWidgetItem(stored_model.label)
+            display_label = self._display_page_label(stored_model)
+            item = QListWidgetItem(display_label)
             item.setData(Qt.ItemDataRole.UserRole, stored_model.id)
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
-            item.setToolTip(stored_model.label)
+            item.setToolTip(display_label)
             self.page_list.insertItem(insert_at + offset, item)
             self._set_thumbnail(item, stored_model)
         self.page_list.clearSelection()
@@ -1091,7 +1176,11 @@ class MainWindow(QMainWindow):
         self.refresh_thumbnail_layout()
         self._update_document_ui()
         self._show_temporary_status(
-            f"{len(models)} página(s) añadida(s)",
+            self.translator.plural(
+                "status.pages_added.one",
+                "status.pages_added.other",
+                len(models),
+            ),
             4000,
         )
 
@@ -1122,7 +1211,12 @@ class MainWindow(QMainWindow):
 
     def add_pdfs(self) -> None:
         document_was_empty = len(self.pages) == 0 and self.page_list.count() == 0
-        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar PDF", "", "Archivos PDF (*.pdf)")
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self.tr("file.select_pdf_title"),
+            "",
+            self.tr("filter.pdf"),
+        )
         models: List[PageModel] = []
         for path in paths:
             try:
@@ -1131,7 +1225,7 @@ class MainWindow(QMainWindow):
                         QMessageBox.warning(
                             self,
                             APP_NAME,
-                            f"El PDF está protegido con contraseña:\n{path}",
+                            self.tr("message.pdf_password", path=path),
                         )
                         continue
 
@@ -1156,7 +1250,15 @@ class MainWindow(QMainWindow):
                             )
                         )
             except Exception as exc:
-                QMessageBox.critical(self, APP_NAME, f"No se pudo abrir:\n{path}\n\n{exc}")
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    self.tr(
+                        "message.file_open_failed",
+                        path=path,
+                        error=exc,
+                    ),
+                )
         if models:
             if document_was_empty:
                 current_row = self.page_list.currentRow()
@@ -1165,15 +1267,15 @@ class MainWindow(QMainWindow):
                 self.undo_stack.clear()
                 self._mark_direct_change()
                 return
-            self._insert_page_models(models, "Agregar PDF")
+            self._insert_page_models(models, self.tr("command.add_pdf"))
 
     def add_images_as_pages(self) -> None:
         was_empty = not self.pages and self.page_list.count() == 0
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Seleccionar imágenes",
+            self.tr("file.select_images_title"),
             "",
-            "Imágenes (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)",
+            self.tr("filter.images"),
         )
         models: List[PageModel] = []
         for path in paths:
@@ -1200,7 +1302,15 @@ class MainWindow(QMainWindow):
                     )
                 )
             except Exception as exc:
-                QMessageBox.warning(self, APP_NAME, f"No se pudo leer la imagen:\n{path}\n\n{exc}")
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    self.tr(
+                        "message.image_read_failed",
+                        path=path,
+                        error=exc,
+                    ),
+                )
         if not models:
             return
         if was_empty:
@@ -1208,7 +1318,10 @@ class MainWindow(QMainWindow):
             self.undo_stack.clear()
             self._mark_direct_change()
             return
-        self._insert_page_models(models, "Agregar imagen como página")
+        self._insert_page_models(
+            models,
+            self.tr("command.add_image_page"),
+        )
 
     def add_blank_page(self) -> None:
         model = PageModel(
@@ -1218,23 +1331,34 @@ class MainWindow(QMainWindow):
             height_pt=A4_PORTRAIT[1],
             label="Página en blanco\nA4",
         )
-        self._insert_page_models([model], "Agregar página en blanco")
+        self._insert_page_models(
+            [model],
+            self.tr("command.add_blank_page"),
+        )
 
     def add_overlay_image(self) -> None:
         if not self.current_page_id:
-            QMessageBox.information(self, APP_NAME, "Selecciona una página primero.")
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                self.tr("message.select_page_first"),
+            )
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Insertar imagen en la página",
+            self.tr("file.insert_image_title"),
             "",
-            "Imágenes (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)",
+            self.tr("filter.images"),
         )
         if not path:
             return
         pixmap = QPixmap(path)
         if pixmap.isNull():
-            QMessageBox.warning(self, APP_NAME, "No se pudo abrir esa imagen.")
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                self.tr("message.image_open_failed"),
+            )
             return
 
         try:
@@ -1243,13 +1367,13 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap(internal_path)
             if pixmap.isNull():
                 raise AssetManagerError(
-                    "No se pudo validar la copia interna de la imagen."
+                    self.tr("message.internal_image_invalid")
                 )
         except Exception as exc:
             QMessageBox.warning(
                 self,
                 APP_NAME,
-                f"No se pudo crear la copia interna de la imagen.\n\n{exc}",
+                self.tr("message.internal_image_copy_failed", error=exc),
             )
             return
 
@@ -1273,7 +1397,7 @@ class MainWindow(QMainWindow):
         )
         self.undo_stack.push(InsertOverlayCommand(self, page.id, overlay))
         self._show_temporary_status(
-            "Imagen insertada: arrástrala y redimensiónala",
+            self.tr("status.image_inserted"),
             4500,
         )
 
@@ -1337,10 +1461,17 @@ class MainWindow(QMainWindow):
         if self.current_page_id in selected_ids:
             self.load_page_into_preview(self.current_page_id)
 
-        direction = "izquierda" if delta < 0 else "derecha"
+        direction = self.tr(
+            "direction.left" if delta < 0 else "direction.right"
+        )
         self.refresh_thumbnail_layout()
         self._show_temporary_status(
-            f"{len(selected_ids)} página(s) rotada(s) a la {direction}",
+            self.translator.plural(
+                "status.pages_rotated.one",
+                "status.pages_rotated.other",
+                len(selected_ids),
+                direction=direction,
+            ),
             4000,
         )
 
@@ -1455,11 +1586,11 @@ class MainWindow(QMainWindow):
         if not before or not after:
             return
         if before.rotation != after.rotation:
-            text = "Rotar imagen"
+            text = self.tr("command.rotate_image")
         elif before.w != after.w or before.h != after.h:
-            text = "Redimensionar imagen"
+            text = self.tr("command.resize_image")
         else:
-            text = "Mover imagen"
+            text = self.tr("command.move_image")
         self.undo_stack.push(UpdateOverlayCommand(self, self.current_page_id, before, after, text))
 
     def load_page_into_preview(self, page_id: str) -> None:
@@ -1605,22 +1736,37 @@ class MainWindow(QMainWindow):
         self._has_temporary_status = True
         progress.setValue(value)
         self.statusBar().showMessage(
-            f"Exportando página {value} de {total}…"
+            self.tr("status.exporting", value=value, total=total)
         )
         QApplication.processEvents()
 
     def export_pdf(self) -> None:
         if self.page_list.count() == 0:
-            QMessageBox.information(self, APP_NAME, "Todavía no hay páginas para exportar.")
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                self.tr("message.no_pages_export"),
+            )
             return
         self.save_current_overlay_positions()
-        path, _ = QFileDialog.getSaveFileName(self, "Exportar PDF", "documento_final.pdf", "Archivo PDF (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("file.export_pdf_title"),
+            self.tr("file.default_export"),
+            self.tr("filter.export_pdf"),
+        )
         if not path:
             return
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
 
-        progress = QProgressDialog("Creando PDF...", "Cancelar", 0, self.page_list.count(), self)
+        progress = QProgressDialog(
+            self.tr("progress.creating_pdf"),
+            self.tr("common.cancel"),
+            0,
+            self.page_list.count(),
+            self,
+        )
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         total_pages = self.page_list.count()
@@ -1644,11 +1790,14 @@ class MainWindow(QMainWindow):
                 self._has_temporary_status = False
                 self.update_status_bar(force=True)
                 return
-            self._show_temporary_status(f"PDF exportado: {path}", 7000)
+            self._show_temporary_status(
+                self.tr("status.pdf_exported", path=path),
+                7000,
+            )
             QMessageBox.information(
                 self,
                 APP_NAME,
-                f"PDF creado correctamente:\n{path}",
+                self.tr("message.pdf_created", path=path),
             )
         except Exception as exc:
             progress.close()
@@ -1657,23 +1806,21 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 APP_NAME,
-                f"No se pudo exportar el PDF.\n\n{exc}",
+                self.tr("message.pdf_export_failed", error=exc),
             )
 
     def _confirm_discard_changes(self) -> bool:
         message_box = QMessageBox(self)
-        message_box.setWindowTitle("Cambios sin guardar")
+        message_box.setWindowTitle(self.tr("confirm.unsaved_title"))
         message_box.setText(
-            "El proyecto contiene cambios que todavía no han sido "
-            "guardados.\n\n"
-            "¿Deseas continuar y perder esos cambios?"
+            self.tr("confirm.unsaved_text")
         )
         close_button = message_box.addButton(
-            "Descartar cambios",
+            self.tr("confirm.discard"),
             QMessageBox.ButtonRole.DestructiveRole,
         )
         cancel_button = message_box.addButton(
-            "Cancelar",
+            self.tr("common.cancel"),
             QMessageBox.ButtonRole.RejectRole,
         )
         message_box.setDefaultButton(cancel_button)

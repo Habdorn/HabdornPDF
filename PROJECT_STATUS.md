@@ -2,9 +2,9 @@
 
 > **Proyecto:** Habdorn PDF
 > **Tipo:** aplicación de escritorio local para Windows
-> **Estado del documento:** auditoría técnica del repositorio al 11 de julio de 2026
-> **Rama y revisión inspeccionadas:** `main`, commit `c2a541e` (`Complete stable undo and redo history`)
-> **Fuente de verdad:** código modular bajo `app/`, `dialogs/`, `models/`, `commands/`, `widgets/` y `services/`; `main.py`; dependencias; scripts; reglas e historial Git.
+> **Estado del documento:** estado técnico actualizado al 13 de julio de 2026
+> **Rama y revisión base:** `feature/i18n-es-en`, basada en `main` commit `119b651` (`Refactor dialogs into modular package`)
+> **Fuente de verdad:** código modular bajo `app/`, `dialogs/`, `i18n/`, `models/`, `commands/`, `widgets/` y `services/`; `main.py`; dependencias; scripts; reglas e historial Git.
 > **Importante:** este documento diferencia entre funcionalidad comprobable en el código, limitaciones explícitas y riesgos inferidos que todavía requieren una prueba manual para considerarse bugs reproducidos.
 
 ## 1. Resumen del proyecto
@@ -13,7 +13,7 @@
 
 Habdorn PDF es una aplicación gráfica de escritorio para componer y reorganizar documentos PDF sin enviar archivos a servicios externos. Permite construir un documento nuevo a partir de páginas de uno o varios PDF, imágenes y páginas A4 en blanco; modificar el orden; eliminar y rotar páginas; colocar imágenes superpuestas; y exportar el resultado a un PDF nuevo.
 
-La aplicación está orientada a usuarios de Windows que necesitan operaciones visuales frecuentes sobre documentos, pero no requieren un editor de contenido PDF completo. Su interfaz y todos los mensajes visibles están en español.
+La aplicación está orientada a usuarios de Windows que necesitan operaciones visuales frecuentes sobre documentos, pero no requieren un editor de contenido PDF completo. La interfaz puede iniciarse en español o inglés; español es el idioma predeterminado.
 
 ### Problema que resuelve
 
@@ -32,7 +32,7 @@ El procesamiento es local. El programa no contiene red, telemetría, subida de d
 
 ### Estado general del desarrollo
 
-**Estimación global: 80 % para el alcance de una primera versión estable y distribuible.**
+**Estimación global: 82 % para el alcance de una primera versión estable y distribuible.**
 
 Esta cifra no significa que sea un editor PDF general al 80 %. Respecto del alcance declarado en el repositorio, las funciones esenciales están implementadas: carga, unión, miniaturas, orden, eliminación, páginas en blanco, imágenes, overlays, rotación, Undo/Redo, proyectos `.hpdf` y exportación. Lo restante se concentra en robustez, pruebas, rendimiento, recuperación automática, PDFs cifrados y edición de texto.
 
@@ -120,7 +120,7 @@ La aplicación es un **programa de escritorio dirigido por eventos con separaci�
 
 ### Organización de carpetas
 
-El código se organiza en `app/`, `dialogs/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, archivos `.ui` ni configuración de CI. Los SVG estáticos de la interfaz viven bajo `resources/`; los assets importados por el usuario se crean fuera del repositorio, dentro de workspaces administrados.
+El código se organiza en `app/`, `dialogs/`, `i18n/`, `models/`, `commands/`, `widgets/` y `services/`. No existen todavía `tests/`, archivos `.ui` ni configuración de CI. Los SVG y catálogos JSON estáticos viven bajo `resources/` e `i18n/locales/`; los assets importados por el usuario se crean fuera del repositorio, dentro de workspaces administrados.
 
 ### Responsabilidades por componente
 
@@ -204,7 +204,7 @@ Es el composition root y controlador principal. Posee:
 
 ### Flujo general
 
-1. `main()` crea `QApplication`, aplica el estilo Qt `Fusion`, crea `MainWindow` e inicia el event loop.
+1. `main()` crea `QApplication`, configura organización/nombre para `QSettings`, carga `preferences/language`, construye `Translator`, aplica el estilo Qt `Fusion`, inyecta traducción/configuración en `MainWindow` e inicia el event loop.
 2. `MainWindow` inicializa estado en memoria y construye panel de miniaturas, preview, toolbar y menús.
 3. Una importación produce uno o más `PageModel` y los inserta en el diccionario y lista.
 4. Seleccionar una miniatura renderiza la página base y materializa sus overlays como items editables.
@@ -227,6 +227,7 @@ HabdornPDF/
 ├── app/
 │   ├── __init__.py
 │   ├── constants.py            # Nombre, A4 y formatos de imagen declarados.
+│   ├── i18n_resources.py       # Catálogos JSON compilados como recursos Qt.
 │   ├── lucide_resources.py     # Recursos Qt generados para incluir los SVG.
 │   └── main_window.py          # UI, estado y coordinación del flujo de usuario.
 ├── dialogs/
@@ -237,7 +238,13 @@ HabdornPDF/
 │   ├── whats_new_dialog.py     # Novedades de la versión de desarrollo.
 │   ├── about_dialog.py         # Información de producto y créditos.
 │   ├── third_party_dialog.py   # Carga y visor de avisos de terceros.
-│   └── preferences_dialog.py   # Preferencias base sin persistencia.
+│   └── preferences_dialog.py   # Selección persistente de idioma y preferencias visibles.
+├── i18n/
+│   ├── __init__.py             # API pública de internacionalización.
+│   ├── translator.py           # Carga, fallback, pluralización y QSettings.
+│   └── locales/
+│       ├── es.json             # Catálogo español canónico (171 claves).
+│       └── en.json             # Catálogo inglés con las mismas claves.
 ├── models/
 │   ├── __init__.py
 │   ├── asset_record.py         # Metadatos inmutables de cada recurso interno.
@@ -261,6 +268,7 @@ HabdornPDF/
 │   ├── pdf_renderer.py         # Render y transformaciones geométricas.
 │   └── project_service.py      # Guardado/apertura segura del formato .hpdf.
 ├── resources/
+│   ├── i18n.qrc                # Catálogos compilables como recursos Qt.
 │   ├── lucide.qrc              # Manifiesto de recursos compilables por Qt.
 │   └── icons/lucide/           # Iconos SVG lineales usados por la mini-ribbon.
 ├── AGENTS.md
@@ -333,6 +341,8 @@ Leyenda: ✅ terminada para el alcance actual; 🟡 parcial/limitada; 🔴 pendi
 | Contador de páginas | ✅ | Actualización automática para importación, eliminación, Undo/Redo, nuevo y apertura. |
 | Toolbar jerarquizada | ✅ | Acciones compartidas agrupadas; guardar es secundaria, exportar principal y eliminar usa hover cauteloso. |
 | Barra de estado contextual | ✅ | Informa estado guardado/modificado, página seleccionada y progreso complementario. |
+| Interfaz Español/English | ✅ | 171 claves por catálogo cubren ventana, ribbon, menús, diálogos, mensajes, filtros, estados y comandos Undo/Redo. |
+| Preferencia de idioma | ✅ | Guarda `es` o `en` en `QSettings` bajo `preferences/language`; el cambio se aplica al reiniciar para evitar una sesión parcialmente traducida. |
 | Edición de texto PDF existente | 🔴 | Explícitamente fuera de la versión actual. |
 | Guardar/abrir proyecto editable | ✅ | Contenedor `.hpdf` portable con estado JSON explícito y assets embebidos. |
 | Nuevo proyecto | ✅ | Crea workspace vacío, limpia historial y registra un punto limpio. |
@@ -362,7 +372,7 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 7. Gestión explícita del orden Z de overlays (traer al frente/enviar atrás).
 8. Copiar, pegar y duplicar páginas u overlays.
 9. Selección “todas las páginas” y acciones masivas más visibles.
-10. Preferencias básicas: carpeta reciente, tamaño/orientación de página en blanco y calidad.
+10. Preferencias adicionales: carpeta reciente, tamaño/orientación de página en blanco y calidad. El idioma ya es editable y persistente.
 
 ### Prioridad P2 — formatos, persistencia y distribución
 
@@ -382,7 +392,7 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 4. Extracción de páginas como archivos independientes.
 5. Optimización/compresión configurable y reporte de tamaño.
 6. Soporte de enlaces, formularios, marcadores, metadatos y otros objetos PDF, si el producto lo requiere.
-7. Accesibilidad, localización adicional y pruebas de alto DPI.
+7. Accesibilidad, idiomas adicionales y pruebas de alto DPI.
 
 ## 7. Bugs conocidos
 
@@ -442,7 +452,7 @@ No existe un backlog formal versionado. La siguiente lista combina limitaciones 
 
 ### Clase orquestadora todavía extensa
 
-`main.py` ya es un punto de entrada mínimo. `MainWindow` conserva cerca de 755 líneas porque sigue coordinando la UI, selección, cache, sincronización y mensajes. Esta concentración residual es aceptable para una extracción conservadora, pero debe vigilarse al agregar funciones.
+`main.py` ya es un punto de entrada mínimo. `MainWindow` supera 1.800 líneas porque sigue coordinando la UI, selección, cache, sincronización, proyectos, traducción de la superficie visual y mensajes. Esta concentración residual es aceptable para las extracciones conservadoras realizadas, pero es el mayor riesgo de mantenibilidad al agregar funciones.
 
 ### Funciones extensas o con múltiples responsabilidades
 
@@ -483,7 +493,7 @@ Los rangos ofrecen flexibilidad, pero un build futuro puede cambiar por resoluci
 
 ### Codificación/documentación heredada
 
-Los archivos deben conservar UTF-8 y el texto visible en español. Cualquier mojibake observado desde consolas con code page incorrecta debe verificarse a nivel de bytes/editor antes de modificar cadenas; no se debe “corregir” masivamente basándose solo en una consola mal configurada.
+Los archivos deben conservar UTF-8. Todo texto nuevo visible debe añadirse a ambos catálogos y consumirse mediante `Translator`; no deben reaparecer cadenas sueltas en un solo idioma. Cualquier mojibake observado desde consolas con code page incorrecta debe verificarse a nivel de bytes/editor antes de modificar cadenas; no se debe “corregir” masivamente basándose solo en una consola mal configurada.
 
 ## 9. Decisiones importantes del proyecto
 
@@ -499,13 +509,19 @@ La toolbar evolucionó a una mini-ribbon compacta con icono arriba y texto abajo
 
 `resources/lucide.qrc` se compila a `app/lucide_resources.py`; `MainWindow` carga cada icono mediante una ruta Qt `:/icons/lucide/...`. Al ser un módulo Python importado normalmente, PyInstaller detecta e incorpora sus bytes sin requerir `--add-data` ni cambios en los scripts `.bat`. La bienvenida y los mensajes vacíos siguen siendo widgets visuales fuera del modelo; desaparecen al existir páginas y regresan al vaciar el documento.
 
-### Ayuda y Preferencias base
+### Ayuda, Preferencias e internacionalización
 
 La barra de menús incluye `Archivo`, `Editar`, `Página` y `Ayuda`. El menú Ayuda ofrece primeros pasos, una tabla de atajos reales, novedades de la versión de desarrollo, sitio web, reporte de problemas y Acerca de. Los enlaces externos solo se abren por acción explícita mediante `QDesktopServices`; no se realizan solicitudes de red desde Python. Como no hay un correo o tracker público confirmado, `Reportar un problema` usa `https://habdorn.com` como fallback documentado.
 
-`Editar → Preferencias…` abre un diálogo base con secciones General, Idioma y Apariencia. Español y el tema Oscuro se muestran como estado actual, pero no son editables ni se persisten todavía. Los avisos de terceros se incorporan en `app/lucide_resources.py` desde `THIRD_PARTY_NOTICES.md` y se leen mediante `:/notices/THIRD_PARTY_NOTICES.md`, por lo que no dependen de rutas locales al ejecutar con PyInstaller.
+`Editar → Preferencias…` abre un diálogo con secciones General, Idioma y Apariencia. El usuario puede elegir Español o English; Guardar persiste el código `es`/`en` con `QSettings` en `preferences/language`. El cambio se aplica únicamente en el próximo inicio y se informa mediante un diálogo, lo que evita reconstruir parcialmente una ventana ya abierta. Cancelar no escribe configuración. El tema Oscuro sigue siendo informativo y no editable.
 
-Los diálogos se organizan como paquete independiente `dialogs/`: cada ventana reside en un módulo propio, mientras `common.py` concentra únicamente estilo, clase base, botón de cierre y apertura controlada de enlaces. `dialogs/__init__.py` mantiene una API pública simple para `MainWindow`. El paquete no importa `MainWindow` ni contiene infraestructura de traducción; la separación prepara una futura internacionalización sin afirmar que ya exista.
+La internacionalización usa una API propia y pequeña en `i18n/translator.py`, sin dependencias externas. `Translator.get()` resuelve claves simples y acepta formato nombrado; `plural()` selecciona variantes `.one`/`.other`. Un locale ausente o inválido cae a español; una clave ausente en el idioma activo intenta español y, si tampoco existe, devuelve `[clave]` de forma visible. Los catálogos `es.json` y `en.json` tienen exactamente las mismas 171 claves de texto.
+
+`resources/i18n.qrc` se compila a `app/i18n_resources.py`. La importación del módulo registra `:/i18n/es.json` y `:/i18n/en.json`, por lo que la ejecución normal y PyInstaller no dependen de rutas del checkout ni necesitan cambios en los `.bat`. Para añadir un idioma futuro: crear el JSON con el conjunto completo de claves, agregarlo al QRC, regenerar el módulo con `pyside6-rcc`, incluir el código en `SUPPORTED_LOCALES` y añadir la opción traducida a Preferencias.
+
+Los avisos de terceros se incorporan en `app/lucide_resources.py` desde `THIRD_PARTY_NOTICES.md` y se leen mediante `:/notices/THIRD_PARTY_NOTICES.md`, por lo que no dependen de rutas locales al ejecutar con PyInstaller.
+
+Los diálogos se organizan como paquete independiente `dialogs/`: cada ventana reside en un módulo propio, mientras `common.py` concentra estilo, clase base, botón de cierre y apertura controlada de enlaces. `dialogs/__init__.py` mantiene una API pública simple para `MainWindow`. El paquete no importa `MainWindow`; cada diálogo recibe un `Translator`, y Preferencias recibe además el mismo `QSettings` de la aplicación.
 
 ### Edición no destructiva con assets administrados
 
@@ -773,11 +789,19 @@ Después, prueba manualmente el flujo afectado. Para cambios de render/exportaci
 
 ### `main.py`
 
-Punto de entrada mínimo: crea `QApplication`, aplica configuración global, construye `MainWindow` e inicia el event loop.
+Punto de entrada mínimo: crea `QApplication`, configura `QSettings`, selecciona el locale guardado, construye `Translator` y `MainWindow`, e inicia el event loop.
 
 ### `app/main_window.py`
 
-Orquestador canónico de la UI y del estado de sesión. Coordina modelos, widgets, comandos y servicios; conserva diálogos y textos visibles.
+Orquestador canónico de la UI y del estado de sesión. Coordina modelos, widgets, comandos, servicios y la traducción de toda la superficie principal.
+
+### `i18n/translator.py`, `i18n/locales/*.json` y `resources/i18n.qrc`
+
+Contrato completo de internacionalización. El módulo carga catálogos embebidos, normaliza locales, implementa fallback y centraliza la clave persistente. Ambos JSON deben conservar idéntico conjunto de claves. Después de modificar un catálogo o el QRC debe regenerarse `app/i18n_resources.py` con `pyside6-rcc` y verificarse que el generado corresponde al manifiesto actual.
+
+### `dialogs/*.py`
+
+Ventanas modales de Ayuda, atajos, novedades, créditos, licencias y Preferencias. Reciben la traducción por inyección; no deben importar `MainWindow` ni crear otro catálogo global.
 
 ### `services/pdf_renderer.py` y `services/pdf_exporter.py`
 
@@ -823,7 +847,7 @@ Build PyInstaller. Es destructivo solo respecto de artefactos generados `build/`
 - No reescribir ni reorganizar el programa.
 - No dividir `main.py` ni renombrar símbolos/archivos salvo necesidad autorizada.
 - No modificar los `.bat` salvo bloqueo evidente y previa autorización.
-- Mantener UTF-8 y texto visible en español.
+- Mantener UTF-8 y paridad completa entre textos visibles en español e inglés.
 - No agregar red, telemetría ni copias persistentes no controladas.
 
 ### Invariantes funcionales
@@ -846,6 +870,8 @@ A estas capacidades obligatorias conviene añadir como baseline actual rotación
 - `PascalCase` para clases.
 - mayúsculas para constantes.
 - modelos de estado como dataclasses tipadas.
+- cadenas visibles identificadas por claves estables en ambos catálogos; nunca guardar el idioma dentro de `.hpdf`.
+- la preferencia de idioma se aplica al arrancar, no en vivo; no reconstruir widgets parcialmente.
 - métodos `_direct` mutan sin crear comandos; las acciones públicas deben empujar comandos cuando corresponde.
 - IDs estables como UUID hex.
 - geometría PDF en puntos y overlays en coordenadas normalizadas.
@@ -874,7 +900,7 @@ Mantener el enfoque local, no destructivo y predecible. Favorecer estados explí
 3. El flujo afectado funciona manualmente.
 4. Undo/Redo vuelve exactamente al estado anterior si aplica.
 5. Miniatura, preview y PDF exportado coinciden.
-6. Mensajes visibles permanecen en español.
+6. Mensajes visibles permanecen completos y coherentes tanto en español como en inglés.
 7. No se añaden dependencias/red/persistencia sin aprobación.
 8. Se actualiza documentación pertinente.
 
@@ -907,6 +933,12 @@ Basado en el historial Git disponible:
 - En `feature/ui-ribbon-lucide`, cambio visual pendiente de validación manual: mini-ribbon de cinco grupos, trece SVG Lucide embebidos como recursos Qt, acción principal de exportación y estilos neutrales para eliminaciones.
 - En `feature/help-and-preferences`, primera etapa pendiente de validación manual: menú Ayuda, diálogos informativos, enlaces explícitos, avisos de terceros embebidos y Preferencias sin controles ficticios ni persistencia.
 - En `feature/modular-dialogs`, refactorización estructural pendiente de validación manual: `app/dialogs.py` sustituido por un paquete de módulos pequeños con API pública estable, sin cambios visibles ni internacionalización.
+
+### 13 de julio de 2026 — cambio local pendiente de validación manual y commit
+
+- En `feature/i18n-es-en`, interfaz bilingüe Español/English mediante 171 claves JSON por catálogo, recursos Qt embebidos, fallback a español e inyección de `Translator` en ventana, comandos y diálogos.
+- Preferencia `preferences/language` persistida con `QSettings`; el cambio se aplica al reiniciar y no altera el contenido portable de los proyectos `.hpdf`.
+- Verificación automatizada local de 40 casos completada, incluida apertura/guardado `.hpdf` entre idiomas y exportación PDF; resta la validación visual manual en Windows y del ejecutable PyInstaller.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
@@ -1005,9 +1037,11 @@ QApplication
 | Fuente movida | Mensaje comprensible y recuperación controlada. |
 | Documento grande | Tiempo, memoria y respuesta de UI. |
 | Build PyInstaller | Inicio en equipo limpio y flujo completo. |
+| Español / English | Reiniciar tras guardar cada idioma; revisar menús, ribbon, diálogos, mensajes, filtros, estados, pluralización y atajos. |
+| Proyecto entre idiomas | Guardar `.hpdf` en un idioma, abrir/editar/guardar en el otro y comprobar que el JSON no contiene preferencia de idioma. |
 
 ## Apéndice C. Alcance explícitamente no presente
 
 No asumir que el proyecto ya soporta: edición de texto existente, OCR, formularios, firmas criptográficas, redacción segura, marcadores, enlaces, contraseñas, autosave, recuperación tras crash, migraciones `.hpdf`, pestañas, impresión, escáner, nube, colaboración, telemetría, actualizaciones automáticas, instalador o firma del ejecutable.
 
-La interfaz actual no incluye panel de propiedades, temas múltiples, modo claro, preferencias editables, cambio de idioma, animaciones complejas ni drag-and-drop de archivos.
+La interfaz actual no incluye panel de propiedades, temas múltiples, modo claro, preferencias adicionales al idioma, cambio de idioma en vivo, animaciones complejas ni drag-and-drop de archivos.

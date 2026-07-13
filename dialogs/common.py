@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.constants import APP_NAME, UI_COLORS
+from i18n import Translator
 
 
 def _dialog_style() -> str:
@@ -61,17 +62,23 @@ class BaseDialog(QDialog):
         title: str,
         parent: Optional[QWidget] = None,
         minimum_size: tuple[int, int] = (480, 320),
+        translator: Optional[Translator] = None,
     ) -> None:
         super().__init__(parent)
+        self.translator = translator or Translator()
         self.setWindowTitle(title)
         self.setMinimumSize(*minimum_size)
         self.setModal(True)
         self.setStyleSheet(_dialog_style())
 
-    @staticmethod
-    def close_buttons() -> QDialogButtonBox:
+    def tr(self, key: str, **values: object) -> str:
+        return self.translator.get(key, **values)
+
+    def close_buttons(self) -> QDialogButtonBox:
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Cerrar")
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(
+            self.tr("common.close")
+        )
         return buttons
 
 
@@ -79,12 +86,18 @@ def open_external_url(
     parent: Optional[QWidget],
     url: str,
     description: str,
+    translator: Optional[Translator] = None,
 ) -> bool:
     if QDesktopServices.openUrl(QUrl(url)):
         return True
+    active_translator = translator or Translator()
     QMessageBox.warning(
         parent,
         APP_NAME,
-        f"No se pudo abrir {description}.\n\n{url}",
+        active_translator.get(
+            "link.open_error",
+            description=description,
+            url=url,
+        ),
     )
     return False

@@ -1,4 +1,5 @@
 APP_NAME = "Habdorn PDF"
+APP_ORGANIZATION = "Habdorn"
 APP_WEBSITE = "https://habdorn.com"
 DEVELOPMENT_VERSION_LABEL = "Versión de desarrollo"
 # No hay todavía un correo o tracker público confirmado. La web es el fallback.

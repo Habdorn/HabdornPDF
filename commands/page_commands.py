@@ -38,7 +38,7 @@ class DeletePagesCommand(QUndoCommand):
         window: "MainWindow",
         rows_and_models: List[Tuple[int, PageModel]],
     ):
-        super().__init__("Eliminar página")
+        super().__init__(window.tr("command.delete_page"))
         self.window = window
         self.rows_and_models = [
             (row, deepcopy(model)) for row, model in rows_and_models
@@ -64,7 +64,7 @@ class RotatePagesCommand(QUndoCommand):
         page_ids: List[str],
         delta: int,
     ):
-        super().__init__("Rotar página")
+        super().__init__(window.tr("command.rotate_page"))
         self.window = window
         self.page_ids = list(page_ids)
         self.delta = delta
@@ -84,7 +84,7 @@ class ReorderPagesCommand(QUndoCommand):
         new_order: List[str],
         skip_first_redo: bool = True,
     ):
-        super().__init__("Reordenar páginas")
+        super().__init__(window.tr("command.reorder_pages"))
         self.window = window
         self.old_order = list(old_order)
         self.new_order = list(new_order)
