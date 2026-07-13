@@ -14,4 +14,7 @@
     <file alias="save.svg">icons/lucide/save.svg</file>
     <file alias="file-output.svg">icons/lucide/file-output.svg</file>
   </qresource>
+  <qresource prefix="/notices">
+    <file alias="THIRD_PARTY_NOTICES.md">../THIRD_PARTY_NOTICES.md</file>
+  </qresource>
 </RCC>

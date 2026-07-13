@@ -227,6 +227,7 @@ HabdornPDF/
 ├── app/
 │   ├── __init__.py
 │   ├── constants.py            # Nombre, A4 y formatos de imagen declarados.
+│   ├── dialogs.py              # Ayuda, información y Preferencias base.
 │   ├── lucide_resources.py     # Recursos Qt generados para incluir los SVG.
 │   └── main_window.py          # UI, estado y coordinación del flujo de usuario.
 ├── models/
@@ -489,6 +490,12 @@ La interfaz mantiene un tema oscuro sobrio con tres niveles de superficie: venta
 La toolbar evolucionó a una mini-ribbon compacta con icono arriba y texto abajo. Reutiliza los mismos `QAction` del menú y separa cinco grupos: Historial, Añadir, Contenido, Página y Proyecto. `Exportar PDF` conserva el mayor contraste, `Guardar` usa jerarquía secundaria y las eliminaciones solo muestran advertencia al pasar el cursor. Los trece iconos lineales proceden de Lucide y están versionados como SVG bajo `resources/icons/lucide/`.
 
 `resources/lucide.qrc` se compila a `app/lucide_resources.py`; `MainWindow` carga cada icono mediante una ruta Qt `:/icons/lucide/...`. Al ser un módulo Python importado normalmente, PyInstaller detecta e incorpora sus bytes sin requerir `--add-data` ni cambios en los scripts `.bat`. La bienvenida y los mensajes vacíos siguen siendo widgets visuales fuera del modelo; desaparecen al existir páginas y regresan al vaciar el documento.
+
+### Ayuda y Preferencias base
+
+La barra de menús incluye `Archivo`, `Editar`, `Página` y `Ayuda`. El menú Ayuda ofrece primeros pasos, una tabla de atajos reales, novedades de la versión de desarrollo, sitio web, reporte de problemas y Acerca de. Los enlaces externos solo se abren por acción explícita mediante `QDesktopServices`; no se realizan solicitudes de red desde Python. Como no hay un correo o tracker público confirmado, `Reportar un problema` usa `https://habdorn.com` como fallback documentado.
+
+`Editar → Preferencias…` abre un diálogo base con secciones General, Idioma y Apariencia. Español y el tema Oscuro se muestran como estado actual, pero no son editables ni se persisten todavía. Los avisos de terceros se incorporan en `app/lucide_resources.py` desde `THIRD_PARTY_NOTICES.md` y se leen mediante `:/notices/THIRD_PARTY_NOTICES.md`, por lo que no dependen de rutas locales al ejecutar con PyInstaller.
 
 ### Edición no destructiva con assets administrados
 
@@ -888,6 +895,7 @@ Basado en el historial Git disponible:
 - En `feature/hpdf-projects`, funcionalidad validada manualmente en Windows: formato `.hpdf` v1, guardado/apertura portables, dirty state basado en proyecto, menú Archivo ampliado y validación defensiva del contenedor.
 - En `feature/ui-phase-1`, limpieza visual conservadora: toolbar agrupada, pantalla inicial, estados vacíos, contador, status contextual, espaciado y jerarquía de acciones.
 - En `feature/ui-ribbon-lucide`, cambio visual pendiente de validación manual: mini-ribbon de cinco grupos, trece SVG Lucide embebidos como recursos Qt, acción principal de exportación y estilos neutrales para eliminaciones.
+- En `feature/help-and-preferences`, primera etapa pendiente de validación manual: menú Ayuda, diálogos informativos, enlaces explícitos, avisos de terceros embebidos y Preferencias sin controles ficticios ni persistencia.
 
 La historia muestra evolución incremental desde la primera versión hacia rotación, reordenamiento robusto y Undo/Redo estable. No se observan tags/releases versionados ni changelog previo.
 
@@ -991,4 +999,4 @@ QApplication
 
 No asumir que el proyecto ya soporta: edición de texto existente, OCR, formularios, firmas criptográficas, redacción segura, marcadores, enlaces, contraseñas, autosave, recuperación tras crash, migraciones `.hpdf`, pestañas, impresión, escáner, nube, colaboración, telemetría, actualizaciones automáticas, instalador o firma del ejecutable.
 
-La interfaz actual no incluye panel de propiedades, temas múltiples, modo claro, preferencias visuales, animaciones complejas ni drag-and-drop de archivos.
+La interfaz actual no incluye panel de propiedades, temas múltiples, modo claro, preferencias editables, cambio de idioma, animaciones complejas ni drag-and-drop de archivos.

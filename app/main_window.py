@@ -8,7 +8,21 @@ from typing import Dict, List, Optional, Tuple
 import fitz  # PyMuPDF
 from PIL import Image
 from app import lucide_resources  # noqa: F401 - registers Qt SVG resources
-from app.constants import A4_PORTRAIT, APP_NAME, UI_COLORS
+from app.constants import (
+    A4_PORTRAIT,
+    APP_NAME,
+    APP_WEBSITE,
+    REPORT_PROBLEM_URL,
+    UI_COLORS,
+)
+from app.dialogs import (
+    AboutDialog,
+    HelpDialog,
+    PreferencesDialog,
+    ShortcutsDialog,
+    WhatsNewDialog,
+    open_external_url,
+)
 from commands.overlay_commands import (
     DeleteOverlaysCommand,
     InsertOverlayCommand,
@@ -437,6 +451,35 @@ class MainWindow(QMainWindow):
         self.export_pdf_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
         self.export_pdf_action.triggered.connect(self.export_pdf)
 
+        self.preferences_action = QAction("Preferencias…", self)
+        self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
+        self.preferences_action.triggered.connect(self.show_preferences)
+
+        self.help_action = QAction("Ayuda de Habdorn PDF", self)
+        self.help_action.triggered.connect(self.show_help)
+        self.shortcuts_action = QAction("Atajos de teclado", self)
+        self.shortcuts_action.triggered.connect(self.show_shortcuts)
+        self.whats_new_action = QAction("Novedades", self)
+        self.whats_new_action.triggered.connect(self.show_whats_new)
+        self.website_action = QAction("Sitio web de Habdorn", self)
+        self.website_action.triggered.connect(
+            lambda: open_external_url(
+                self,
+                APP_WEBSITE,
+                "el sitio web de Habdorn",
+            )
+        )
+        self.report_problem_action = QAction("Reportar un problema", self)
+        self.report_problem_action.triggered.connect(
+            lambda: open_external_url(
+                self,
+                REPORT_PROBLEM_URL,
+                "la página para reportar un problema",
+            )
+        )
+        self.about_action = QAction("Acerca de Habdorn PDF", self)
+        self.about_action.triggered.connect(self.show_about)
+
         action_icons = {
             self.undo_action: "undo-2",
             self.redo_action: "redo-2",
@@ -571,11 +614,39 @@ class MainWindow(QMainWindow):
         edit_menu = self.edit_menu
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.preferences_action)
 
         self.page_menu = self.menuBar().addMenu("Página")
         page_menu = self.page_menu
         page_menu.addAction(self.rotate_left_action)
         page_menu.addAction(self.rotate_right_action)
+
+        self.help_menu = self.menuBar().addMenu("Ayuda")
+        help_menu = self.help_menu
+        help_menu.addAction(self.help_action)
+        help_menu.addAction(self.shortcuts_action)
+        help_menu.addAction(self.whats_new_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.website_action)
+        help_menu.addAction(self.report_problem_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.about_action)
+
+    def show_preferences(self) -> None:
+        PreferencesDialog(self).exec()
+
+    def show_help(self) -> None:
+        HelpDialog(self).exec()
+
+    def show_shortcuts(self) -> None:
+        ShortcutsDialog(self).exec()
+
+    def show_whats_new(self) -> None:
+        WhatsNewDialog(self).exec()
+
+    def show_about(self) -> None:
+        AboutDialog(self).exec()
 
     def new_project(self) -> None:
         if self.is_dirty and not self._confirm_discard_changes():

@@ -1,4 +1,8 @@
 APP_NAME = "Habdorn PDF"
+APP_WEBSITE = "https://habdorn.com"
+DEVELOPMENT_VERSION_LABEL = "Versión de desarrollo"
+# No hay todavía un correo o tracker público confirmado. La web es el fallback.
+REPORT_PROBLEM_URL = APP_WEBSITE
 A4_PORTRAIT = (595.276, 841.89)
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
