@@ -824,11 +824,6 @@ class MainWindow(QMainWindow):
             QWidget#ribbonGroup QToolButton:focus {{
                 border: 1px solid {colors['accent_hover']};
             }}
-            QWidget#ribbonGroup QToolButton:disabled {{
-                background: #23272e;
-                color: #69717d;
-                border-color: #303640;
-            }}
             QWidget#ribbonGroup QToolButton[role="primary"] {{
                 background: {colors['accent']};
                 border-color: {colors['accent_hover']};
@@ -845,6 +840,11 @@ class MainWindow(QMainWindow):
             QWidget#ribbonGroup QToolButton[role="destructive"]:hover {{
                 background: #43332f;
                 border-color: {colors['warning']};
+            }}
+            QWidget#ribbonGroup QToolButton:disabled {{
+                background: #23272e;
+                color: #69717d;
+                border-color: #303640;
             }}
             QStackedWidget#pageListStack, QStackedWidget#previewStack {{
                 background: transparent;
